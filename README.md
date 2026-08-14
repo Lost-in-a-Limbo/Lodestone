@@ -4,7 +4,7 @@ A filtered approximate nearest neighbor index in C++20, built from scratch.
 
 **The question this project exists to answer:** what happens to a navigable graph when a metadata filter deletes 99% of its nodes — and can you do anything about it?
 
-> ⚠️ **Status: in development.** Phase 0 of 8. Benchmarks below are placeholders until Phase 4 lands. Nothing here is production-ready and nothing here claims to be.
+
 
 ---
 
