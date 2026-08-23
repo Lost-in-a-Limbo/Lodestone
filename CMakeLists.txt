@@ -69,6 +69,7 @@ add_library(
   lodestone_core STATIC
   src/distance_scalar.cpp
   src/distance_avx2.cpp
+  src/io.cpp
   src/vector_store.cpp
   src/hnsw.cpp
   src/filter.cpp
