@@ -43,7 +43,7 @@ if(LODESTONE_HAS_STD_EXPECTED)
   message(STATUS "lodestone: <expected> is available under C++20")
 else()
   message(STATUS "lodestone: no <expected> under C++20 — the error channel is "
-                 "lodestone::status plus std::optional")
+                 "lodestone::Status plus std::optional")
 endif()
 
 # ---------------------------------------------------------------------------
