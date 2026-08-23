@@ -280,6 +280,52 @@ TEST_CASE("recall_at_k reads only the first k of a longer truth row",
   }
 }
 
+TEST_CASE("recall_at_k_tied forgives a distance tie but not a real miss",
+          "[brute_force]") {
+  // The case this exists for, in miniature. On SIFT1M it is caused by the
+  // 14,538 byte-identical duplicate vectors in the corpus: when a duplicate
+  // lands on the k-th boundary, several id sets are equally correct answers and
+  // strict set comparison measures the tie-break convention instead of the
+  // search.
+  const auto store = line_store(10);
+  auto computer = make_distance_computer(Metric::l2, store);
+  REQUIRE(computer != nullptr);
+
+  SECTION("a boundary tie scores 1.0, where strict recall scores 0.5") {
+    const float query = 5.0F; // ids 4 and 6 are equidistant
+    computer->prepare_query(&query);
+
+    const std::vector<Neighbor> got = {{5, 0.0F}, {4, 1.0F}};
+    const std::vector<std::int32_t> truth = {5, 6};
+
+    CHECK(recall_at_k(got, truth) == 0.5);
+    CHECK(recall_at_k_tied(*computer, got, truth) == 1.0);
+  }
+
+  SECTION("a genuinely worse neighbour is still a miss") {
+    const float query = 0.0F;
+    computer->prepare_query(&query);
+
+    // Truth is {0,1,2}; we returned 5, which is far outside the boundary.
+    const std::vector<Neighbor> got = {{0, 0.0F}, {1, 1.0F}, {5, 25.0F}};
+    const std::vector<std::int32_t> truth = {0, 1, 2};
+
+    CHECK(recall_at_k(got, truth) == 2.0 / 3.0);
+    CHECK(recall_at_k_tied(*computer, got, truth) == 2.0 / 3.0);
+  }
+
+  SECTION("with no ties it agrees with strict recall") {
+    const float query = 0.0F;
+    computer->prepare_query(&query);
+
+    const std::vector<Neighbor> got = {{0, 0.0F}, {1, 1.0F}, {2, 4.0F}};
+    const std::vector<std::int32_t> truth = {0, 1, 2};
+
+    CHECK(recall_at_k(got, truth) == 1.0);
+    CHECK(recall_at_k_tied(*computer, got, truth) == 1.0);
+  }
+}
+
 TEST_CASE("diagnose_recall names what was missed and what replaced it",
           "[brute_force]") {
   const auto store = line_store(10);

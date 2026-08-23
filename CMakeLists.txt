@@ -119,6 +119,10 @@ if(LODESTONE_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
+# Always built: the tools are small, and one of them produces Phase 1's
+# exit-criterion numbers. It registers its own ctest entry when tests are on.
+add_subdirectory(tools)
+
 if(LODESTONE_BUILD_BENCH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/CMakeLists.txt")
   add_subdirectory(bench)
 endif()

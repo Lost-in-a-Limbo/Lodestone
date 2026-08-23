@@ -143,6 +143,41 @@ double recall_at_k(std::span<const Neighbor> got, std::span<const std::int32_t> 
   return static_cast<double>(hits) / static_cast<double>(k);
 }
 
+double recall_at_k_tied(const DistanceComputer& computer, std::span<const Neighbor> got,
+                        std::span<const std::int32_t> truth) {
+  const std::size_t k = got.size();
+  if (k == 0 || truth.size() < k) {
+    return 0.0;
+  }
+
+  // The k-th true distance: the largest among the first k truth entries. Rows
+  // arrive sorted, but taking the max rather than truth[k-1] means a row that
+  // is not perfectly sorted cannot silently lower the bar.
+  float threshold = 0.0F;
+  bool first = true;
+  for (std::size_t i = 0; i < k; ++i) {
+    if (truth[i] < 0) {
+      return 0.0;
+    }
+    const float d = computer.distance_to(static_cast<VectorId>(truth[i]));
+    if (first || d > threshold) {
+      threshold = d;
+      first = false;
+    }
+  }
+
+  // A neighbour at most as far as the k-th true neighbour is a correct answer,
+  // whether or not it is the particular id the reference generator chose.
+  std::size_t hits = 0;
+  for (const auto& n : got) {
+    if (n.distance <= threshold || within_tolerance(n.distance, threshold)) {
+      ++hits;
+    }
+  }
+
+  return static_cast<double>(hits) / static_cast<double>(k);
+}
+
 Status diagnose_recall(const DistanceComputer& computer, std::span<const Neighbor> got,
                        std::span<const std::int32_t> truth, RecallDiagnosis& out) {
   const std::size_t k = got.size();

@@ -51,6 +51,31 @@ Status brute_force_knn(DistanceComputer& computer, const float* query, std::size
 [[nodiscard]] double recall_at_k(std::span<const Neighbor> got,
                                 std::span<const std::int32_t> truth);
 
+/// recall@k measured against the k-th true *distance* rather than the k-th true
+/// *id set*.
+///
+/// A returned neighbour counts as a hit when its distance is no greater than
+/// the largest distance in `truth[0, k)`. This is the ANN-Benchmarks
+/// convention, and on SIFT1M it is not optional: 14,538 of the corpus's
+/// 1,000,000 vectors are byte-identical duplicates of another vector (1.45%,
+/// 985,462 distinct). When a duplicate lands on the k-th boundary, "the k
+/// nearest neighbours" is not a well-defined *set* — several equally correct
+/// answers exist — so comparing ids against whichever one the reference
+/// generator happened to pick measures the tie-break convention, not the search.
+///
+/// This is deliberately not the same thing as loosening the metric with an
+/// epsilon to make a number look better, which `RecallDiagnosis` exists to
+/// avoid. The distinction is that this was reached for only *after*
+/// `diagnose_recall` proved every shortfall sat exactly on the boundary and the
+/// tied vectors were confirmed bit-identical. Report both numbers: the strict
+/// set recall says how often the tie-break differed, and this one says whether
+/// the search was actually right.
+///
+/// `computer` must already have the query prepared that produced `got`.
+[[nodiscard]] double recall_at_k_tied(const DistanceComputer& computer,
+                                     std::span<const Neighbor> got,
+                                     std::span<const std::int32_t> truth);
+
 /// Why a recall figure came out below 1.000.
 ///
 /// The honest response to imperfect recall is not to loosen the metric into an
