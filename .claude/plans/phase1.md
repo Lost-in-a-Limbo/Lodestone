@@ -328,7 +328,7 @@ checks, one from upstream and one from arithmetic.
 `set -euo pipefail`; idempotent (skip what is already present and verified);
 `curl --retry`; siftsmall by default, `--full` for SIFT1M.
 
-**Proof command:** `./tools/download_sift.sh && ls -l data/`
+**Proof command:** `./tools/download_sift.sh && ls -l data/siftsmall/`
 
 ---
 
@@ -369,8 +369,8 @@ it is the right trade — a valid Phase 2 baseline is worth a slow Phase 1 scrip
 **Proof commands:**
 ```bash
 ctest --test-dir build/debug --output-on-failure          # green, siftsmall
-./build/release/tools/sift_check data/sift_base.fvecs \
-    data/sift_query.fvecs data/sift_groundtruth.ivecs     # must print 1.000000
+./build/release/tools/sift_check data/sift/sift_base.fvecs \
+    data/sift/sift_query.fvecs data/sift/sift_groundtruth.ivecs   # must print 1.000000
 ```
 
 ---
@@ -393,8 +393,8 @@ ctest --test-dir build/debug --output-on-failure          # green, siftsmall
 cmake --build build/debug && ctest --test-dir build/debug --output-on-failure
 cmake --build build/asan  && ctest --test-dir build/asan  --output-on-failure
 ./tools/download_sift.sh --full
-./build/release/tools/sift_check data/sift_base.fvecs \
-    data/sift_query.fvecs data/sift_groundtruth.ivecs
+./build/release/tools/sift_check data/sift/sift_base.fvecs \
+    data/sift/sift_query.fvecs data/sift/sift_groundtruth.ivecs
 ```
 
 The `asan` run is not redundant with `debug`: it is the optimised sanitised

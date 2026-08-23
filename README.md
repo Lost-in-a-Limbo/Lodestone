@@ -99,7 +99,8 @@ The debug preset enables AddressSanitizer and UndefinedBehaviorSanitizer.
 
 ```bash
 cmake --preset release && cmake --build build/release
-./tools/download_sift.sh          # fetches SIFT1M into data/
+./tools/download_sift.sh          # SIFT10K into data/siftsmall/ (~5 MB)
+./tools/download_sift.sh --full   # adds SIFT1M into data/sift/  (~170 MB)
 ./build/release/bench --all       # writes bench/results/results.json
 ```
 
