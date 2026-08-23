@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Correctness only. There are deliberately no timing assertions anywhere in
+# this file and there never will be: GitHub's runners are shared Intel hosts
+# with different cache behaviour and AVX-512, so a performance gate here would
+# be measuring a machine that isn't the one publishing the numbers. CI proves
+# the code is correct; the laptop produces every number that gets published.
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, release]
+        # Both compilers, because the laptop has gcc-11 and the plan assumed
+        # gcc-12. Testing one would let the two diverge unnoticed.
+        compiler: [g++-11, g++-12]
+
+    name: ${{ matrix.preset }} / ${{ matrix.compiler }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ${{ matrix.compiler }}
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/CPM.cmake', 'tests/CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-
+
+      - name: Configure
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  format:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format-14
+
+      - name: Check formatting
+        run: |
+          find include src tests bench -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null \
+            | xargs --no-run-if-empty clang-format-14 --dry-run --Werror
