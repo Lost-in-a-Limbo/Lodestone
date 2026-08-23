@@ -31,6 +31,21 @@ macros when they expand in our test translation units, so turning it on needs
 Catch2's headers marked `SYSTEM` first. Not worth a Phase 0 detour. Revisit
 when the test suite is large enough that a warning can hide in it.
 
+### 64-byte-align the prepared query buffer
+**Raised:** Phase 1 task 3. **Decide by:** measurement in Phase 2.
+
+`ScalarL2Computer::query_` is a plain `std::vector<float>`, so it is 16-byte
+aligned at best. The stored vectors are 64-byte aligned and the query is not,
+which means Phase 2's AVX2 kernel will want `_mm256_loadu_ps` on the query side
+even while it can use aligned loads on the store side.
+
+The reason not to fix it blind: the query stays resident in L1 for an entire
+search — it is the same 512 bytes read over and over — whereas the store side
+streams fresh cache lines on every distance. Unaligned loads on L1-resident
+data have been close to free on x86 since Nehalem. So this is plausibly worth
+nothing, and Phase 2 should *measure* it rather than pay for an aligned
+allocator on the strength of an argument.
+
 ### Finish vendoring CPM
 **Raised:** Phase 0, see DECISIONS.md D6.
 

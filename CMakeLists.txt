@@ -67,6 +67,7 @@ target_compile_options(
 # reconfigures for an unrelated reason.
 add_library(
   lodestone_core STATIC
+  src/distance.cpp
   src/distance_scalar.cpp
   src/distance_avx2.cpp
   src/io.cpp

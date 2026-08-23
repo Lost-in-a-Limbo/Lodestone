@@ -13,7 +13,8 @@ include(Catch)
 # binary per file. Catch2 v3 is a compiled library, so N binaries means N links
 # against it; catch_discover_tests() still registers every TEST_CASE as its own
 # ctest entry, so nothing is lost in granularity.
-add_executable(lodestone_tests test_types.cpp test_io.cpp test_vector_store.cpp)
+add_executable(lodestone_tests test_types.cpp test_distance.cpp test_io.cpp
+                               test_vector_store.cpp)
 
 target_link_libraries(lodestone_tests PRIVATE lodestone_core lodestone_options
                                               Catch2::Catch2WithMain)

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "lodestone/types.hpp"
+#include "lodestone/vector_store.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 namespace lodestone {
@@ -58,8 +60,15 @@ public:
   DistanceComputer& operator=(DistanceComputer&&) = delete;
 
   /// Bind the query. Called once per search, before any distance call.
-  /// `query` must point to dim() floats and stay valid until the next
-  /// prepare_query() or destruction — the computer does not copy it.
+  /// `query` must point to dim() floats; it is **copied**, so it need not
+  /// outlive this call.
+  ///
+  /// Implementations copy into an internal buffer padded out to the store's
+  /// stride and zero-filled beyond `dim`. That is what makes a stride-wide
+  /// kernel safe: the store zeroes its own padding, but a caller's query array
+  /// is only `dim` floats long, so a kernel reading `stride` floats from it
+  /// would run off the end. With both sides padded and zeroed, every padding
+  /// term contributes nothing and the kernel needs no tail loop.
   virtual void prepare_query(const float* query) = 0;
 
   /// Distance from the prepared query to one stored vector. Present for
@@ -79,5 +88,31 @@ public:
   /// reload cannot pair an L2 graph with an inner-product computer.
   [[nodiscard]] virtual Metric metric() const = 0;
 };
+
+/// The single place in the codebase where a concrete kernel is chosen.
+///
+/// Callers name a `Metric` and get the interface back; they never name a class.
+/// In Phase 1 this returns the scalar squared-L2 kernel. In Phase 2 the *body*
+/// of this one function grows CPU feature detection and starts returning an
+/// AVX2 kernel instead — and no caller changes, which is the entire point of
+/// the seam described above.
+///
+/// Returns nullptr when the request cannot be served: an unreserved store (no
+/// dimension to compute over), or a metric not yet implemented.
+///
+/// `store` must outlive the returned computer — it is referenced, not copied.
+/// Vectors are the one thing too large to copy per query.
+[[nodiscard]] std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric,
+                                                                      const VectorStore& store);
+
+namespace detail {
+
+/// Kernel constructors, one per translation unit, so a concrete kernel class
+/// stays private to the file that defines it. Phase 2 adds its SIMD entries
+/// here and make_distance_computer() gains the feature check that selects
+/// between them.
+[[nodiscard]] std::unique_ptr<DistanceComputer> make_scalar_l2(const VectorStore& store);
+
+} // namespace detail
 
 } // namespace lodestone
