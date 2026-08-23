@@ -31,6 +31,18 @@ macros when they expand in our test translation units, so turning it on needs
 Catch2's headers marked `SYSTEM` first. Not worth a Phase 0 detour. Revisit
 when the test suite is large enough that a warning can hide in it.
 
+### Brute force over an explicit candidate subset
+**Raised:** Phase 1 task 4. **Needed by:** Phase 6, strategy A.
+
+`brute_force_knn` scans the contiguous range `[0, count)`. Phase 6's pre-filter
+strategy needs the same selection logic over an arbitrary id subset — the set
+that passed the predicate. That is a second entry point sharing one internal
+scan, not a rewrite, and the bounded-heap and blocking logic transfer unchanged.
+
+Deliberately not built now. A filter strategy written before there is a graph
+to filter is a guess, and the signature is the only part that had to be got
+right early — which it was, by taking `count` rather than reaching into a store.
+
 ### 64-byte-align the prepared query buffer
 **Raised:** Phase 1 task 3. **Decide by:** measurement in Phase 2.
 
