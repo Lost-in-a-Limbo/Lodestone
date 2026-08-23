@@ -1,0 +1,66 @@
+---
+# Config lands in Phase 0 so it never has to be retrofitted onto a grown
+# codebase. clang-tidy is not installed locally yet, so this is CI-enforced
+# until clang-tidy-15 is on the laptop.
+Checks: >
+  bugprone-*,
+  performance-*,
+  readability-*,
+  modernize-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -modernize-use-trailing-return-type,
+  -bugprone-easily-swappable-parameters
+
+# Each exclusion has a reason:
+#   readability-magic-numbers          HNSW is full of legitimate literals — 256
+#                                      centroids, 64-byte alignment, 2*M. Naming
+#                                      every one of them hurts readability here.
+#   readability-identifier-length      The paper's names are M, ef, q, mL.
+#                                      Renaming them breaks the mapping from
+#                                      arXiv 1603.09320 to the code, which is the
+#                                      most useful property this codebase has.
+#   modernize-use-trailing-return-type Pure style churn.
+#   bugprone-easily-swappable-parameters  (dim, count) pairs are unavoidable in
+#                                      numeric kernels; the check never stops.
+#   readability-function-cognitive-complexity  SEARCH-LAYER is irreducibly
+#                                      branchy. Splitting it to satisfy a linter
+#                                      would make it harder to check against the
+#                                      paper, which is the only check that counts.
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/lodestone/.*'
+FormatStyle: file
+
+CheckOptions:
+  # CLAUDE.md: snake_case for functions and variables, PascalCase for types.
+  # clang-tidy spells PascalCase "CamelCase".
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  # Enumerators stay lower_case: Status::ok reads better than Status::Ok, and
+  # they behave like values, not types.
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case

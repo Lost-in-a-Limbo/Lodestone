@@ -1,0 +1,27 @@
+---
+# Pinned on day one so no diff in any later phase is ever polluted by
+# reformatting noise. LLVM base, 100 columns, per PRD section 7.
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+ColumnLimit: 100
+IndentWidth: 2
+AccessModifierOffset: -2
+PointerAlignment: Left
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Inline
+AlwaysBreakTemplateDeclarations: Yes
+FixNamespaceComments: true
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Our own headers sort first, so a lodestone header that forgot an include
+  # fails the build here instead of surviving on a lucky include order.
+  - Regex: '^"lodestone/'
+    Priority: 1
+  - Regex: '^<catch2/|^<benchmark/'
+    Priority: 3
+  - Regex: '^<[a-z_]+>$'
+    Priority: 4
+  - Regex: '.*'
+    Priority: 2

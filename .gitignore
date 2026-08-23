@@ -1,0 +1,33 @@
+# Build trees — one per CMake preset
+build/
+cmake-build-*/
+compile_commands.json
+
+# Datasets. SIFT1M is ~500MB; it is downloaded, never committed.
+data/
+*.fvecs
+*.ivecs
+*.bvecs
+*.tar.gz
+
+# CPM's dependency source cache, if it ever lands inside the repo
+.cache/
+
+# Claude Code: settings are local, plans are not.
+# .claude/plans/ is deliberately TRACKED — the plans are the record of why the
+# code looks the way it does, and belong in history next to the diffs they made.
+# The trailing glob catches the .tmp.NNNN files Claude Code leaves behind when
+# it rewrites the settings file.
+.claude/settings.local.json*
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Stray compiler output, in case anything escapes build/
+*.o
+*.a
+*.so
