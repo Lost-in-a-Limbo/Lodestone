@@ -67,6 +67,20 @@ offline-cold-clone property. Small, mechanical, do it during Phase 1.
 
 ---
 
+### Measured and decided against
+
+Kept here so the same idea does not get re-raised as an optimisation.
+
+- **Avoiding the double copy in `load_fvecs`** (file → scratch → store). Would
+  need `VectorStore` to expose writable uninitialised slots, which hands the
+  zero-padding contract to the caller and lets a vector be left half-written.
+  Measured: the read-and-copy portion of a 1M load is ~60–120 ms warm-cache, so
+  there is nothing here worth that risk.
+- **Chunked reads instead of the per-record loop.** The plan flagged this as a
+  possible follow-up if load time was embarrassing. It is 0.35 s warm for
+  516 MB, of which two thirds is page-fault cost that a different read strategy
+  would not touch. Not worth doing.
+
 ## Untriaged
 
 Things worth thinking about, in no order, with no commitment.

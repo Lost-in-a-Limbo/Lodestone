@@ -218,3 +218,168 @@ CI contains **no timing assertions and never will**. GitHub's runners are
 shared Intel hosts with different cache behaviour and AVX-512; a performance
 gate there would be measuring a machine that isn't the one publishing numbers.
 CI proves correctness; the laptop produces every published number.
+
+---
+
+## D12 — Every distance is squared. The sqrt is never taken
+
+**Phase 1.** `src/distance_scalar.cpp`
+
+sqrt is monotone, so it cannot change a ranking, and it would cost a
+transcendental on the hottest path in the system. Nothing downstream un-squares
+it — not the recall metric, not the benchmark output, not `Neighbor::distance`.
+`tests/test_distance.cpp` asserts that the distance from `[3,0,0,0]` to the
+origin is 9 rather than 3, specifically so that a later "fix" adding the sqrt
+back fails a test instead of silently halving the throughput.
+
+---
+
+## D13 — Padding is zeroed, and `prepare_query` copies
+
+**Phase 1.** `src/vector_store.cpp`, `src/distance_scalar.cpp`
+
+`VectorStore::reserve` rounds each vector's stride up to a multiple of 16 floats
+(64 bytes) so that *every* vector starts on a cache line, not only the first,
+and zero-fills the whole allocation.
+
+With padding at zero, a squared-L2 term is `(0-0)² = 0` and an inner-product
+term is `0*0 = 0`. A kernel may therefore process all `stride` floats instead of
+exactly `dim`, which lets Phase 2's AVX2 kernel run whole 8-wide iterations with
+**no scalar tail loop and no masked final load** — the fiddliest part of writing
+a SIMD kernel by hand.
+
+That only works if the *query* is padded too. The store zeroes its own padding,
+but a caller's query array is only `dim` floats long, so a stride-wide kernel
+would read off the end of it. Hence `prepare_query()` copies into an internal
+buffer padded to the stride and zero-filled beyond `dim` — reversing the
+header's original "does not copy" promise. This also deletes a lifetime
+requirement from the interface, and it gives `prepare_query()` real work to do,
+which is the justification D1 offered for its existence.
+
+**Measured cost, since the estimate was wrong.** Zero-filling 488 MiB looks like
+it costs 0.245 s of a 0.358 s load — 67%. It does not. Removing the `memset`
+entirely drops a full load only to 0.301 s, so the *marginal* cost is **57 ms**,
+about 16%. The rest is first-touch page-fault cost on fresh anonymous pages,
+which is paid either way — lazily during the read instead of eagerly in
+`reserve`. 57 ms once, to delete the tail loop from every future SIMD kernel and
+to make the reported RSS reflect resident memory rather than lazily-mapped
+address space, is cheap.
+
+**Note for every dimension-sensitive test:** SIFT is 128 and GIST is 960, both
+already multiples of 16, so both pad to nothing. A stride bug is invisible on
+every dataset in the PRD. Tests run at dim 100 (stride 112) as well.
+
+---
+
+## D14 — Parsers return `Status`, not `std::optional`
+
+**Phase 1.** `include/lodestone/io.hpp`
+
+The Phase 1 plan specified `std::optional` returns. Changed, because the tests
+that make the parsers worth having need to assert *which* error occurred —
+`io_error` for a malformed file versus `dimension_mismatch` for a bad record
+prefix — and `std::optional` discards precisely that. `Status` was already the
+project's error channel (D3), so this needed no new abstraction.
+
+The plan's `FvecsInfo` became `VecsInfo`: `float` and `int32` elements are both
+4 bytes, so one probe serves both formats.
+
+---
+
+## D15 — Scalar L2 lands in Phase 1, and the factory is the dispatch seam
+
+**Phase 1.** `src/distance.cpp`, `src/distance_scalar.cpp`
+
+Brute force cannot compute a single distance without one concrete kernel
+existing, and architecture rule 1 forbids reaching around the interface to get
+one. So Phase 1 implements scalar squared L2 — and nothing else. Inner product,
+the SSE and AVX2 kernels, runtime dispatch and the microbenchmarks all remain
+Phase 2's work.
+
+There is a benefit to that ordering: Phase 1 becomes the **first real consumer
+of the D1 interface**, so the seam is validated by working code now rather than
+in Phase 3 when the graph depends on it.
+
+`make_distance_computer(Metric, const VectorStore&)` is the single place a
+concrete kernel is chosen. It lives in its own translation unit compiled with
+ordinary flags — no `-mavx2`, no `-fno-tree-vectorize` — because dispatch code
+has to run on a machine lacking the instruction set it is about to select. In
+Phase 2 the body of that one function grows the CPU feature check and no caller
+changes.
+
+---
+
+## D16 — Exact k-NN orders by `(distance, id)`, not distance alone
+
+**Phase 1.** `src/brute_force.cpp`
+
+Distance alone leaves equal-distance neighbours arranged however the bounded
+heap happened to leave them, so a rerun can return a different-but-equally-
+correct answer. This function is the ground truth every later phase is measured
+against; it has to be reproducible down to the id.
+
+A bounded max-heap, not a full sort: at k=10 over a million vectors, sorting
+does 1M·log(1M) comparisons to answer what 1M comparisons answer, because after
+the first few hundred candidates almost everything loses to the heap top
+immediately.
+
+---
+
+## D17 — SIFT1M contains duplicate vectors, so recall needs a tie-aware form
+
+**Phase 1.** `src/brute_force.cpp`. **This is the phase's real finding.**
+
+Exact brute force over SIFT1M scored **0.999440**, not 1.000. The PRD says any
+deviation means the parser or the metric is wrong. It is neither.
+
+The evidence, in the order it arrived:
+
+1. `diagnose_recall` reported all 56 shortfalls with `worst_kept` *exactly* equal
+   to `best_missed` — not close, equal.
+2. The missed/extra id pairs had only **two distinct offsets**, 78816 and 64278.
+   Two values across 56 queries is structure, not float noise.
+3. Reading both records straight out of `sift_base.fvecs` settled it: they are
+   **byte-identical**.
+4. Counting the whole corpus: **14,538 of 1,000,000 vectors are duplicates**
+   (1.4538%; 985,462 distinct).
+
+When a duplicate lands on the k-th boundary, "the 10 nearest neighbours" is not
+a well-defined *set* — several answers are equally correct. Strict id comparison
+then measures whose tie-break convention won, not whether the search was right.
+TEXMEX's generator keeps the higher id; ours keeps the lower, by D16.
+
+So `recall_at_k_tied` thresholds on the k-th true *distance* — the
+ANN-Benchmarks convention. It reports **1.000000 exactly**. Both numbers are
+published; the assertion is on the tie-aware one, which reaches 1.0 exactly when
+no returned neighbour is farther than the k-th true one, so it cannot forgive a
+real miss.
+
+**Why this is not the epsilon fudge `RecallDiagnosis` exists to prevent.** The
+order of events is the entire distinction. The diagnostic proved the shortfall
+sat exactly on the boundary, and the duplicates were confirmed bit-identical,
+*before* the definition changed. Reaching for tie-awareness first would have
+been tuning the metric until the number looked good. With the evidence in hand,
+strict set recall is simply the wrong measure for a non-unique answer.
+
+**This will matter again.** Phase 3's HNSW recall, Phase 5's quantisation loss
+and Phase 6's filtered recall are all measured against this same ground truth on
+this same corpus. Every one of them should report the tie-aware figure, or
+inherit a 0.06% penalty that has nothing to do with the algorithm under test.
+
+---
+
+## D18 — Phase 1's QPS is a median of three with no warmup, and that is a stated deviation
+
+**Phase 1.** `tools/sift_check.cpp`
+
+The project's fixed methodology requires a discarded 10-second warmup. It is
+skipped here, deliberately and visibly, because it is meaningless for this
+workload: a brute-force query streams the entire 488 MiB corpus, so there is no
+working set for a warmup to warm. Three runs are still taken and the median
+reported.
+
+`sift_check` is explicitly **not** the benchmark harness — no JSON, no sweep, no
+latency percentiles, no `hnswlib`. Phase 4 builds that. This tool exists to
+prove recall is 1.000 and to report three numbers while it is there. It prints a
+warning whenever it is run with fewer than 10,000 queries, so a SIFT10K QPS
+figure cannot be mistaken for a methodology-compliant measurement.

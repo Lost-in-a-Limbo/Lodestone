@@ -51,9 +51,9 @@ Everything is written from scratch. `hnswlib` and `faiss` appear only in `bench/
 
 | Phase | What it builds | Status |
 |---|---|---|
-| 0 | Scaffolding, CMake, CI | 🔨 in progress |
-| 1 | `.fvecs` parsing, aligned storage, brute-force ground truth | — |
-| 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | — |
+| 0 | Scaffolding, CMake, CI | ✅ done |
+| 1 | `.fvecs` parsing, aligned storage, brute-force ground truth | ✅ done |
+| 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | 🔨 in progress |
 | 3 | HNSW construction and search | — |
 | 4 | Benchmark harness, comparison against `hnswlib` | — |
 | 5 | Product quantization | — |
@@ -67,7 +67,20 @@ Phase 6 is the point of the project. Everything before it is the measurement rig
 
 ## Benchmarks
 
-Nothing to report yet. When Phase 4 lands, this section will contain recall@10 vs QPS curves on SIFT1M measured against `hnswlib` and `faiss`, with full machine specs — **including the cases where Lodestone loses and why.**
+The recall@10-vs-QPS curves against `hnswlib` and `faiss` land with Phase 4 — **including the cases where Lodestone loses and why.** What exists so far is the ground truth everything else will be measured against.
+
+Exact brute force on SIFT1M, single-threaded, machine specs and regeneration commands in [`BENCHMARKS.md`](BENCHMARKS.md):
+
+| Metric | Value |
+|---|---|
+| Load, 1M × 128 vectors | 0.33 s |
+| Peak RSS | 501.6 MiB |
+| Brute-force throughput | 11.58 QPS (median of 3, 1.7% spread) |
+| **recall@10** | **1.000000** |
+
+That recall figure has a story attached. Strict id-set comparison against the provided ground truth gives 0.999440, not 1.000 — and the 0.06% gap is not a bug. **SIFT1M contains 14,538 byte-identical duplicate vectors** among its million records, so when a duplicate lands on the k-th boundary, "the 10 nearest neighbours" is not a well-defined *set*: several answers are equally correct, and strict comparison measures whose tie-break convention won rather than whether the search was right. Recall is therefore reported thresholded on the k-th true distance, the ANN-Benchmarks convention.
+
+The order that happened in matters, and it is written down in [`DECISIONS.md`](DECISIONS.md) D17: the shortfall was traced to bit-identical duplicates *before* the metric was changed, not after.
 
 Methodology, fixed for the project:
 
