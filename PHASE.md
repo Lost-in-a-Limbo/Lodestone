@@ -88,6 +88,8 @@ compile error and proves nothing.
 2026-08-24  Phase 1  store, parsers, scalar L2 kernel, exact k-NN, recall,
                      download script, sift_check; SIFT1M recall investigated
                      to duplicate vectors; 56 tests; Phase 1 closed
+2026-08-27  Phase 2  pushed Phase 0+1 to origin/main (13 commits, b20c81f..e73fcf4);
+                     Phase 0's last exit criterion ticked; Phase 2 planning
 ```
 
 ---
