@@ -135,26 +135,87 @@ the configuration `ctest` runs; it takes 0.9 s under the sanitised debug preset.
 
 ## Phase 2 — distance kernels
 
-ns per distance computation, dim 128 and dim 960.
+Machine M1, `release` preset. Regenerate with:
 
-| Kernel | dim 128 | dim 960 | vs scalar | Machine |
+```bash
+./build/release/bench/bench_distance --benchmark_min_time=1s \
+    --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
+```
+
+**"ns per distance" is two numbers, not one.** Reporting only the first is how a
+SIMD speedup gets overstated, so both fixtures are always published:
+
+- **`l1`** — store ~16 KiB, inside L1d, so the same few vectors are re-read for
+  the whole run. Compute-bound. This is what the kernel can do.
+- **`stream`** — store 256 MiB, 16× the 16 MiB L3, walked linearly so every
+  distance touches a cold line. Memory-bound. This is what predicts
+  brute-force QPS.
+
+Bandwidth counts payload bytes only (`dim` floats, not `stride`), so it is
+comparable across dimensions and against the Phase 1 brute-force figure.
+
+### Scalar baseline, squared L2
+
+Median of 3. Stddev was 0.14–3.1 ns, i.e. **0.2–0.5%** — far inside the 5%
+reproducibility target.
+
+| Fixture | dim | ns/distance | GiB/s | stddev |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| `l1` | 128 | **76.52** | 6.23 | 0.18% |
+| `stream` | 128 | **79.71** | 5.98 | 0.31% |
+| `l1` | 960 | **648.10** | 5.52 | 0.45% |
+| `stream` | 960 | **667.89** | 5.35 | 0.47% |
 
-**Prediction on record before measuring**, from the Phase 1 numbers above. Two
-different ceilings apply and they should be reported separately:
+Inner product runs 4–8% faster than L2 at the same shape, which is the one
+subtract it does not do.
 
-- A *microbenchmark* with the vectors resident in L1 is compute-bound, so it
-  should show close to the full SIMD-width speedup. Phase 2's ≥3× exit criterion
-  is measured here and should pass comfortably.
-- A *full 1M scan* streams 488 MiB per query and already moves 5.5 GiB/s.
-  Single-core streaming bandwidth on a mobile Zen 3 part is roughly 15–20 GiB/s,
-  well below the DRAM peak, which caps the achievable scan speedup at about
-  **3×** no matter how fast the kernel gets.
+**The baseline finding: `l1` and `stream` differ by only 4.2% at dim 128.** The
+scalar kernel is slow enough to be compute-bound even while walking 256 MiB —
+the memory system keeps up trivially at 6 GiB/s. So the two fixtures currently
+say almost the same thing. They will diverge sharply once a SIMD kernel lands,
+and that divergence is the measurement this phase exists to make.
 
-If the microbenchmark shows 6× and brute-force QPS improves 3×, that is not a
-contradiction — it is the memory wall, and it is the answer to Phase 2's "explain
-why the speedup isn't exactly 8×".
+**dim 960 costs 0.675 ns per dimension against dim 128's 0.598** — 12.9% more,
+where per-distance loop overhead amortising over 960 elements instead of 128
+should have made it *cheaper*. Most likely L1 pressure: at dim 960 each distance
+streams a 3.84 KiB stored vector against a 3.84 KiB query, 7.7 KiB touched per
+distance versus 1 KiB at dim 128. Recorded as an observation, not a conclusion —
+worth confirming when the SIMD kernels give a second data point.
+
+### The prediction, on record before the SIMD kernels exist
+
+Now quantitative, from the numbers above rather than from Phase 1's estimate:
+
+- **`l1` should approach the full SIMD width**, so roughly 8× for AVX2 — down
+  from 76.5 ns toward ~10 ns at dim 128. Phase 2's ≥3× exit criterion is
+  measured here and should pass comfortably.
+- **`stream` cannot.** It already moves 5.98 GiB/s. Single-core streaming
+  bandwidth on a mobile Zen 3 part is roughly 15–20 GiB/s — well under DRAM peak,
+  because one core cannot keep enough misses outstanding. That floors `stream`
+  at 79.7 × 5.98/20 ≈ **24 ns** to 79.7 × 5.98/15 ≈ **32 ns**, a speedup of only
+  **2.5× to 3.3×**.
+
+If `l1` shows 6–8× and `stream` shows ~3×, that is not a contradiction. It is the
+memory wall, and it is the answer to "explain why the speedup isn't exactly 8×".
+**Falsify this rather than confirm it** — if `stream` beats 3.3×, the
+single-core bandwidth estimate was wrong and that is the more interesting result.
+
+### Methodology note: CPU frequency scaling
+
+Google Benchmark warns that CPU scaling is enabled. It is: the governor is
+`powersave` under `amd-pstate-epp`, and pinning it needs root this session does
+not have. Reported rather than quietly ignored — but the measured stddev of
+0.2–0.5% across three runs says it is not materially affecting these numbers.
+
+### Kernel comparison
+
+Filled by tasks 3–5.
+
+| Kernel | `l1` dim 128 | `stream` dim 128 | `l1` dim 960 | `stream` dim 960 | vs scalar |
+|---|---|---|---|---|---|
+| scalar | 76.52 ns | 79.71 ns | 648.10 ns | 667.89 ns | 1.00× |
+| sse | — | — | — | — | — |
+| avx2 | — | — | — | — | — |
 
 ## Phase 3 — HNSW
 
