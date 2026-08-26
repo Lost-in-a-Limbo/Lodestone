@@ -70,6 +70,7 @@ add_library(
   src/brute_force.cpp
   src/distance.cpp
   src/distance_scalar.cpp
+  src/distance_sse.cpp
   src/distance_avx2.cpp
   src/io.cpp
   src/vector_store.cpp
@@ -109,6 +110,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # on a machine without it — which defeats Phase 2's runtime dispatch entirely.
   set_source_files_properties(
     src/distance_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+
+  # The mirror image. distance_sse.cpp is the 4-wide *control* for the AVX2
+  # measurement, so AVX must be off in it: -march=native would otherwise let the
+  # compiler vectorise any stray scalar code in that file to AVX2, and the "SSE"
+  # row would be partly an AVX2 row. Appended after -march=native so the
+  # negations win, and the file #errors if __AVX__ or __AVX2__ survives.
+  set_source_files_properties(
+    src/distance_sse.cpp PROPERTIES COMPILE_OPTIONS "-mno-avx;-mno-avx2;-mno-fma")
 endif()
 
 # ---------------------------------------------------------------------------

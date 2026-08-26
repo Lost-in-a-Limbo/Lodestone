@@ -61,8 +61,18 @@ std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric,
     return nullptr;
 
   case KernelKind::sse:
+    // No feature check: every x86-64 CPU has SSE2 by definition of the
+    // architecture, and distance_sse.cpp uses nothing beyond it.
+    switch (metric) {
+    case Metric::l2:
+      return detail::make_sse_l2(store);
+    case Metric::inner_product:
+      return detail::make_sse_ip(store);
+    }
+    return nullptr;
+
   case KernelKind::avx2:
-    // Tasks 3 and 4. nullptr rather than a silent downgrade to scalar: a
+    // Task 4. nullptr rather than a silent downgrade to a narrower kernel: a
     // benchmark that asked for AVX2 and quietly got scalar would report a
     // speedup of 1.0 and read as a slow kernel rather than a missing one.
     return nullptr;

@@ -207,15 +207,84 @@ Google Benchmark warns that CPU scaling is enabled. It is: the governor is
 not have. Reported rather than quietly ignored — but the measured stddev of
 0.2–0.5% across three runs says it is not materially affecting these numbers.
 
-### Kernel comparison
+### Kernel comparison, squared L2
 
-Filled by tasks 3–5.
+All figures from a **single invocation** so the comparison is fair, median of 3.
+AVX2 row filled by tasks 4–5.
 
-| Kernel | `l1` dim 128 | `stream` dim 128 | `l1` dim 960 | `stream` dim 960 | vs scalar |
-|---|---|---|---|---|---|
-| scalar | 76.52 ns | 79.71 ns | 648.10 ns | 667.89 ns | 1.00× |
-| sse | — | — | — | — | — |
-| avx2 | — | — | — | — | — |
+| Kernel | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
+|---|---|---|---|---|
+| scalar | 74.80 ns | 638.33 ns | 77.02 ns | 649.40 ns |
+| sse | **19.46 ns** | **161.55 ns** | **30.78 ns** | **230.69 ns** |
+| avx2 | — | — | — | — |
+
+| Speedup vs scalar | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
+|---|---|---|---|---|
+| sse | **3.84×** | **3.95×** | **2.50×** | **2.81×** |
+
+| Bandwidth | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
+|---|---|---|---|---|
+| scalar | 6.37 GiB/s | 5.60 GiB/s | 6.19 GiB/s | 5.51 GiB/s |
+| sse | 24.51 GiB/s | 22.14 GiB/s | **15.49 GiB/s** | **15.50 GiB/s** |
+
+### What the SSE row establishes
+
+**1. The 4-wide kernel achieves 3.84–3.95× in L1** — essentially the full
+theoretical width. So the kernel is clean, and SSE is doing its job as the
+control: an AVX2 kernel that fails to roughly double this has a problem, and
+without this row there would be nothing to notice that against.
+
+**2. The single-core memory bandwidth ceiling is 15.5 GiB/s, and it is now
+measured rather than estimated.** `stream` reports 15.4935 GiB/s at dim 128 and
+15.5024 GiB/s at dim 960 — two completely different working shapes landing
+within 0.06% of each other. That is not a coincidence; it is a wall. The Phase 1
+prediction guessed "roughly 15–20 GiB/s" and the answer is at the bottom of that
+range.
+
+**3. The wall is hit at SSE, not at AVX2 — which was not predicted.** The
+streaming speedup is already 2.50–2.81×, and `stream` is already saturated. So
+AVX2 should improve the `l1` numbers by roughly another 2× while improving
+`stream` **barely at all.** That is a sharper claim than the original prediction
+(which expected AVX2 to be the thing that hit the ceiling) and it is the one
+task 4 should be judged against.
+
+Restated as a falsifiable prediction before task 4 exists: AVX2 `l1` dim 128
+lands near 10 ns; AVX2 `stream` dim 128 stays within ~10% of SSE's 30.78 ns.
+
+**4. Batching already supplies instruction-level parallelism, which matters for
+task 5.** At dim 128, SSE takes 19.46 ns per distance — 88.5 cycles at the
+4.546 GHz peak clock, across 32 four-lane iterations, so **2.76 cycles per
+iteration**. But the kernel has a *single* accumulator, and `addps` on Zen 3 has
+3 cycles of latency, which should floor a dependent chain at 3 cycles per
+iteration before counting the reduction and the call.
+
+The loop is therefore running faster than its own dependency chain permits in
+isolation. The only available explanation is that `distances_to()` computes
+independent distances back to back, so the tail of one overlaps the head of the
+next. (If the sustained clock is below peak, the measured cycle count is lower
+still and the effect is larger.)
+
+Consequence for task 5: **the accumulator experiment should show less
+improvement than textbook FMA-latency arithmetic predicts**, because the batch
+is already filling the pipeline. Worth measuring precisely because the textbook
+answer is likely to be wrong here.
+
+**5. The dim-960 penalty is not kernel-specific.** Per dimension, dim 960 costs
+12.9% more than dim 128 under scalar and 10.7% more under SSE. Two kernels with
+completely different instruction mixes showing the same ~11–13% penalty points
+at the memory hierarchy, not at the code — consistent with each dim-960 distance
+touching a 3.84 KiB vector against a 3.84 KiB query, 7.7 KiB per distance
+against 1 KiB at dim 128. Still an observation, now with a second data point
+behind it.
+
+### Methodology note: within-run versus between-run variance
+
+Stddev *within* one invocation is 0.2–0.5%. But the scalar figures moved about
+2% between two invocations minutes apart (76.52 → 74.80 ns at `l1` dim 128).
+Both are inside the project's 5% reproducibility target, and it is why every
+kernel comparison above comes from a **single invocation** — comparing a number
+from one run against a number from another would put a 2% drift into a
+measurement whose interesting effects are sometimes that small.
 
 ## Phase 3 — HNSW
 

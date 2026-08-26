@@ -5,6 +5,7 @@
 // the zeroed-padding contract must hold from the *kernel* side, not just from
 // the store's side. Phase 2's tail-free AVX2 kernel is built on the second one.
 
+#include "lodestone/detail/prepared_query.hpp"
 #include "lodestone/distance.hpp"
 #include "lodestone/types.hpp"
 #include "lodestone/vector_store.hpp"
@@ -12,7 +13,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <type_traits>
@@ -267,12 +270,137 @@ TEST_CASE("the factory refuses a request it cannot serve", "[distance]") {
   SECTION("a kernel that does not exist yet") {
     VectorStore store;
     REQUIRE(store.reserve(4, 1) == Status::ok);
-    // Returning nullptr rather than silently downgrading to scalar. A
-    // benchmark that asked for AVX2 and quietly got scalar would report a
+    // Returning nullptr rather than silently downgrading to a narrower kernel.
+    // A benchmark that asked for AVX2 and quietly got scalar would report a
     // speedup of 1.0 and look like a slow kernel rather than a missing one.
-    CHECK(make_distance_computer(Metric::l2, store, KernelKind::sse) == nullptr);
     CHECK(make_distance_computer(Metric::l2, store, KernelKind::avx2) == nullptr);
   }
+}
+
+TEST_CASE("SSE agrees with scalar across dimensions and metrics", "[distance]") {
+  // The real cross-kernel gate. Relative, not absolute: SIFT squared-L2
+  // distances run to ~5e4, and reordering a float32 sum of n terms — which is
+  // exactly what vectorising does — perturbs it by roughly n*eps*magnitude. At
+  // dim 960 that is an expected absolute difference of order 1e-2 on entirely
+  // correct code, so the PRD's "within 1e-4" can only sensibly mean relative.
+  std::mt19937 rng(31337);
+  // 0..255, matching SIFT's magnitudes: real SIFT vectors are uint8 histograms
+  // widened to float, and testing at a realistic magnitude is what exposes
+  // accumulation error at a realistic scale.
+  std::uniform_real_distribution<float> values(0.0F, 255.0F);
+
+  // dim 100 is in the list because its stride is 112: it is the only case here
+  // where the kernels run past `dim` into padding, so it is the only one that
+  // can catch a kernel that mishandles the tail-free loop.
+  for (const std::size_t dim : {std::size_t{100}, std::size_t{128}, std::size_t{960}}) {
+    const std::size_t count = 24;
+    std::vector<std::vector<float>> rows;
+    rows.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      std::vector<float> row(dim);
+      for (auto& x : row) {
+        x = values(rng);
+      }
+      rows.push_back(std::move(row));
+    }
+    const auto store = make_store(dim, rows);
+
+    std::vector<float> query(dim);
+    for (auto& x : query) {
+      x = values(rng);
+    }
+
+    for (const Metric metric : {Metric::l2, Metric::inner_product}) {
+      auto reference = make_distance_computer(metric, store, KernelKind::scalar);
+      auto simd = make_distance_computer(metric, store, KernelKind::sse);
+      REQUIRE(reference != nullptr);
+      REQUIRE(simd != nullptr);
+      CHECK(simd->kernel() == KernelKind::sse);
+
+      reference->prepare_query(query.data());
+      simd->prepare_query(query.data());
+
+      for (std::size_t i = 0; i < count; ++i) {
+        const auto id = static_cast<VectorId>(i);
+        const double want = static_cast<double>(reference->distance_to(id));
+        const double got = static_cast<double>(simd->distance_to(id));
+        CHECK(got == Catch::Approx(want).epsilon(1e-5));
+      }
+    }
+  }
+}
+
+TEST_CASE("SSE ranks identically to scalar, which is the property that matters",
+          "[distance]") {
+  // Distance agreement is the weak test. Two kernels can agree to 1e-5 and
+  // still return different neighbours, because a reordering only needs the gap
+  // between two adjacent ranks to be smaller than the error — the same float32
+  // effect Phase 1 met on SIFT1M. So compare the induced ordering directly.
+  std::mt19937 rng(777);
+  std::uniform_real_distribution<float> values(0.0F, 255.0F);
+
+  const std::size_t dim = 128;
+  const std::size_t count = 400;
+  std::vector<std::vector<float>> rows;
+  rows.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    std::vector<float> row(dim);
+    for (auto& x : row) {
+      x = values(rng);
+    }
+    rows.push_back(std::move(row));
+  }
+  const auto store = make_store(dim, rows);
+
+  std::vector<float> query(dim);
+  for (auto& x : query) {
+    x = values(rng);
+  }
+
+  auto reference = make_distance_computer(Metric::l2, store, KernelKind::scalar);
+  auto simd = make_distance_computer(Metric::l2, store, KernelKind::sse);
+  REQUIRE(reference != nullptr);
+  REQUIRE(simd != nullptr);
+  reference->prepare_query(query.data());
+  simd->prepare_query(query.data());
+
+  std::vector<VectorId> by_reference(count);
+  std::vector<VectorId> by_simd(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    by_reference[i] = static_cast<VectorId>(i);
+    by_simd[i] = static_cast<VectorId>(i);
+  }
+  const auto sort_by = [](const DistanceComputer& c, std::vector<VectorId>& ids) {
+    std::sort(ids.begin(), ids.end(), [&](VectorId a, VectorId b) {
+      const float da = c.distance_to(a);
+      const float db = c.distance_to(b);
+      return da != db ? da < db : a < b;
+    });
+  };
+  sort_by(*reference, by_reference);
+  sort_by(*simd, by_simd);
+
+  CHECK(by_reference == by_simd);
+}
+
+TEST_CASE("the prepared query buffer is cache-line aligned", "[distance]") {
+  // Not cosmetic. A 32-byte _mm256_load_ps from a 16-byte-aligned base — which
+  // is all std::vector<float> guarantees — is undefined behaviour on half its
+  // offsets, so Task 4's AVX2 kernel depends on this holding. Checked through
+  // the only observable route: that both kernels agree at a dimension whose
+  // stride includes padding.
+  detail::PreparedQuery query(100, 112);
+  CHECK(reinterpret_cast<std::uintptr_t>(query.data()) % 64 == 0);
+  CHECK(query.stride() == 112);
+
+  // Padding is zero at construction and stays zero after a set().
+  const std::vector<float> payload(100, 3.5F);
+  query.set(payload.data());
+  for (std::size_t i = 100; i < 112; ++i) {
+    CHECK(query.data()[i] == 0.0F);
+  }
+  CHECK(query.data()[0] == 3.5F);
+  CHECK(query.data()[99] == 3.5F);
 }
 
 TEST_CASE("inner product is negated so that smaller still means closer",

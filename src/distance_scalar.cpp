@@ -5,16 +5,15 @@
 // forbids reaching around the interface to get it. Inner product, the SIMD
 // variants, and runtime dispatch are Phase 2.
 
+#include "lodestone/detail/prepared_query.hpp"
 #include "lodestone/distance.hpp"
 #include "lodestone/types.hpp"
 #include "lodestone/vector_store.hpp"
 
 #include <cassert>
 #include <cstddef>
-#include <cstring>
 #include <memory>
 #include <span>
-#include <vector>
 
 // This file is the *baseline* in "AVX2 is >=3x scalar". Under the release
 // preset's -O3 -march=native, GCC will happily auto-vectorise a plain L2 loop
@@ -51,15 +50,10 @@ template <Metric metric_v>
 class ScalarComputer final : public DistanceComputer {
 public:
   explicit ScalarComputer(const VectorStore& store)
-      : store_(store), dim_(store.dim()), stride_(store.stride()), query_(store.stride(), 0.0F) {}
+      : store_(store), dim_(store.dim()), stride_(store.stride()),
+        query_(store.dim(), store.stride()) {}
 
-  void prepare_query(const float* query) override {
-    // Copy exactly dim_ floats into a buffer that is stride_ long and was
-    // zero-filled at construction. The padding tail is therefore written once,
-    // in the constructor, and never touched again — so repeated queries cost
-    // one memcpy of the payload and nothing else.
-    std::memcpy(query_.data(), query, dim_ * sizeof(float));
-  }
+  void prepare_query(const float* query) override { query_.set(query); }
 
   [[nodiscard]] float distance_to(VectorId id) const override { return compute(id); }
 
@@ -116,11 +110,7 @@ private:
   std::size_t dim_;
   std::size_t stride_;
 
-  /// Padded to stride_ and zero beyond dim_. Not 64-byte aligned: the query
-  /// stays resident in L1 across a whole search, so an unaligned load on it is
-  /// far less interesting than on the streaming store side. Phase 2 should
-  /// measure that rather than assume it — logged in IDEAS.md.
-  std::vector<float> query_;
+  detail::PreparedQuery query_;
 };
 
 } // namespace
