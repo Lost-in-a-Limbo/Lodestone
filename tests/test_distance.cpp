@@ -258,16 +258,129 @@ TEST_CASE("a computer reports its shape and metric", "[distance]") {
   CHECK(computer->metric() == Metric::l2);
 }
 
-TEST_CASE("the factory refuses what Phase 1 does not implement", "[distance]") {
-  VectorStore store;
-  REQUIRE(store.reserve(4, 1) == Status::ok);
-
-  SECTION("inner product arrives in Phase 2") {
-    CHECK(make_distance_computer(Metric::inner_product, store) == nullptr);
-  }
-
+TEST_CASE("the factory refuses a request it cannot serve", "[distance]") {
   SECTION("an unreserved store has no dimension to compute over") {
     const VectorStore empty;
     CHECK(make_distance_computer(Metric::l2, empty) == nullptr);
+  }
+
+  SECTION("a kernel that does not exist yet") {
+    VectorStore store;
+    REQUIRE(store.reserve(4, 1) == Status::ok);
+    // Returning nullptr rather than silently downgrading to scalar. A
+    // benchmark that asked for AVX2 and quietly got scalar would report a
+    // speedup of 1.0 and look like a slow kernel rather than a missing one.
+    CHECK(make_distance_computer(Metric::l2, store, KernelKind::sse) == nullptr);
+    CHECK(make_distance_computer(Metric::l2, store, KernelKind::avx2) == nullptr);
+  }
+}
+
+TEST_CASE("inner product is negated so that smaller still means closer",
+          "[distance]") {
+  // Larger dot product means *more* similar, which is backwards from L2. Every
+  // consumer — the bounded heap in brute_force, Phase 3's candidate queues — is
+  // written around "smaller is closer", so the kernel negates rather than
+  // asking each of them to flip a comparator per metric.
+  const auto store = make_store(4, {
+                                       {1.0F, 1.0F, 1.0F, 1.0F}, // dot 4 with the query
+                                       {2.0F, 2.0F, 2.0F, 2.0F}, // dot 8  — most similar
+                                       {0.0F, 0.0F, 0.0F, 0.0F}, // dot 0  — least similar
+                                   });
+
+  auto computer = make_distance_computer(Metric::inner_product, store);
+  REQUIRE(computer != nullptr);
+  CHECK(computer->metric() == Metric::inner_product);
+
+  const std::vector<float> query = {1.0F, 1.0F, 1.0F, 1.0F};
+  computer->prepare_query(query.data());
+
+  CHECK(computer->distance_to(0) == -4.0F);
+  CHECK(computer->distance_to(1) == -8.0F);
+  CHECK(computer->distance_to(2) == 0.0F);
+
+  // The property that actually matters: the most similar vector has the
+  // smallest "distance", so an unmodified nearest-neighbour search finds it.
+  CHECK(computer->distance_to(1) < computer->distance_to(0));
+  CHECK(computer->distance_to(0) < computer->distance_to(2));
+}
+
+TEST_CASE("under inner product a vector's distance to itself is not zero",
+          "[distance]") {
+  // -‖x‖², a direct consequence of the negation convention. Asserted so that
+  // nobody "fixes" it into 0 and breaks the ordering in the process.
+  const auto store = make_store(4, {{1.0F, 2.0F, 3.0F, 4.0F}});
+  auto computer = make_distance_computer(Metric::inner_product, store);
+  REQUIRE(computer != nullptr);
+
+  computer->prepare_query(store.get(0));
+  CHECK(computer->distance_to(0) == -(1.0F + 4.0F + 9.0F + 16.0F));
+}
+
+TEST_CASE("inner-product padding contributes nothing either", "[distance]") {
+  // The same contract as L2, and it holds for the same reason: a padding term
+  // is 0 * 0. Tested separately because a kernel could get L2 right and inner
+  // product wrong — squared L2 tolerates garbage padding far less obviously
+  // than a product does.
+  std::vector<float> a(padded_dim);
+  std::vector<float> q(padded_dim);
+  for (std::size_t i = 0; i < padded_dim; ++i) {
+    a[i] = static_cast<float>(i) * 0.25F;
+    q[i] = 0.5F;
+  }
+
+  const auto store = make_store(padded_dim, {a});
+  REQUIRE(store.stride() == 112);
+
+  auto computer = make_distance_computer(Metric::inner_product, store);
+  REQUIRE(computer != nullptr);
+  computer->prepare_query(q.data());
+
+  double dot = 0.0;
+  for (std::size_t i = 0; i < padded_dim; ++i) {
+    dot += static_cast<double>(a[i]) * static_cast<double>(q[i]);
+  }
+  CHECK(static_cast<double>(computer->distance_to(0)) == Catch::Approx(-dot).epsilon(1e-5));
+}
+
+TEST_CASE("an explicit kernel request is honoured, not downgraded",
+          "[distance]") {
+  VectorStore store;
+  REQUIRE(store.reserve(4, 1) == Status::ok);
+
+  for (const Metric m : {Metric::l2, Metric::inner_product}) {
+    auto computer = make_distance_computer(m, store, KernelKind::scalar);
+    REQUIRE(computer != nullptr);
+    CHECK(computer->kernel() == KernelKind::scalar);
+    CHECK(computer->metric() == m);
+  }
+}
+
+TEST_CASE("detected_kernel resolves to something concrete", "[distance]") {
+  // `automatic` is a request, never an answer. If this ever returns automatic,
+  // make_distance_computer would recurse or return nullptr for every caller.
+  CHECK(detected_kernel() != KernelKind::automatic);
+
+  VectorStore store;
+  REQUIRE(store.reserve(4, 1) == Status::ok);
+
+  auto automatic = make_distance_computer(Metric::l2, store, KernelKind::automatic);
+  REQUIRE(automatic != nullptr);
+  CHECK(automatic->kernel() == detected_kernel());
+
+  // Whatever detection claims is available must actually be constructible.
+  // A dispatch table that selects a kernel this machine cannot run is an
+  // illegal-instruction crash, not a wrong number.
+  auto explicit_same = make_distance_computer(Metric::l2, store, detected_kernel());
+  REQUIRE(explicit_same != nullptr);
+  CHECK(explicit_same->kernel() == detected_kernel());
+}
+
+TEST_CASE("every KernelKind has a name", "[distance]") {
+  // These strings end up in results.json and benchmark output, so a missing
+  // one is a hole in the record of what was measured.
+  for (const KernelKind k : {KernelKind::automatic, KernelKind::scalar, KernelKind::sse,
+                             KernelKind::avx2}) {
+    CHECK_FALSE(kernel_name(k).empty());
+    CHECK(kernel_name(k) != "unknown");
   }
 }

@@ -213,8 +213,17 @@ Status diagnose_recall(const DistanceComputer& computer, std::span<const Neighbo
     }
   }
 
+  // Seeded from the first element rather than from 0.0F. Under Metric::
+  // inner_product every distance is negative (the kernel negates the dot
+  // product so that smaller still means closer), and a max against 0.0F would
+  // report worst_kept = 0 — a value no neighbour has, which would then make
+  // every boundary-tie verdict wrong.
+  bool first_kept = true;
   for (const auto& n : got) {
-    out.worst_kept = std::max(out.worst_kept, n.distance);
+    if (first_kept || n.distance > out.worst_kept) {
+      out.worst_kept = n.distance;
+      first_kept = false;
+    }
   }
 
   if (!out.missed.empty()) {

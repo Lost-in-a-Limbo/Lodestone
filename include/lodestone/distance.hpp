@@ -7,14 +7,41 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 
 namespace lodestone {
 
 /// Which distance the index is built and queried under. Chosen once per index;
 /// mixing metrics between build and query silently destroys recall.
+///
+/// **Every computer returns "smaller means closer", for both metrics.** A larger
+/// inner product means *more* similar, which is backwards, so the
+/// inner-product kernels return the **negated** dot product. The alternative —
+/// a per-metric comparator in every consumer — hands all future graph code a
+/// chance to get the sign wrong, and that failure returns the *farthest*
+/// neighbours while looking perfectly healthy. One negation in one kernel
+/// cannot be got wrong twice.
+///
+/// The visible consequence: under `inner_product`, a vector's distance to
+/// itself is `-‖x‖²`, not 0. Surprising, but harmless, and asserted by a test so
+/// that nobody "fixes" it.
 enum class Metric : std::uint8_t {
   l2,
   inner_product,
+};
+
+/// Which implementation computes the distances.
+///
+/// A *request*, not a type. Callers name a `KernelKind` at most; they never name
+/// a class, so architecture rule 1 still holds and the graph stays free of
+/// kernel identities.
+enum class KernelKind : std::uint8_t {
+  /// Pick the best one this CPU supports. The only value non-benchmark code
+  /// should ever pass.
+  automatic,
+  scalar,
+  sse,
+  avx2,
 };
 
 /// THE INJECTABLE INTERFACE. Graph code holds a `DistanceComputer&` and
@@ -87,6 +114,14 @@ public:
   /// Which metric this computer implements. Serialised with the index so a
   /// reload cannot pair an L2 graph with an inner-product computer.
   [[nodiscard]] virtual Metric metric() const = 0;
+
+  /// Which implementation this actually is.
+  ///
+  /// Not decoration. It is how a test verifies that an explicit kernel request
+  /// was honoured rather than silently downgraded, and how Phase 4 records
+  /// which kernel produced a number — a benchmark that does not say what it
+  /// ran is not a measurement.
+  [[nodiscard]] virtual KernelKind kernel() const = 0;
 };
 
 /// The single place in the codebase where a concrete kernel is chosen.
@@ -97,13 +132,27 @@ public:
 /// AVX2 kernel instead — and no caller changes, which is the entire point of
 /// the seam described above.
 ///
+/// `kind` defaults to `automatic`, so no existing caller changes when a new
+/// kernel lands — that is the property this seam was shaped to have. Explicit
+/// selection exists because the microbenchmark and the correctness tests must
+/// instantiate *each* kernel, not whichever one the host happens to prefer.
+///
 /// Returns nullptr when the request cannot be served: an unreserved store (no
-/// dimension to compute over), or a metric not yet implemented.
+/// dimension to compute over), a metric not yet implemented, or a `kind` this
+/// build or this CPU does not have.
 ///
 /// `store` must outlive the returned computer — it is referenced, not copied.
 /// Vectors are the one thing too large to copy per query.
-[[nodiscard]] std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric,
-                                                                      const VectorStore& store);
+[[nodiscard]] std::unique_ptr<DistanceComputer>
+make_distance_computer(Metric metric, const VectorStore& store,
+                       KernelKind kind = KernelKind::automatic);
+
+/// What `KernelKind::automatic` resolves to on this machine, in this build.
+/// Never returns `automatic`.
+[[nodiscard]] KernelKind detected_kernel();
+
+/// Stable lowercase name, for benchmark output and `results.json`.
+[[nodiscard]] std::string_view kernel_name(KernelKind kind);
 
 namespace detail {
 
@@ -112,6 +161,7 @@ namespace detail {
 /// here and make_distance_computer() gains the feature check that selects
 /// between them.
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_scalar_l2(const VectorStore& store);
+[[nodiscard]] std::unique_ptr<DistanceComputer> make_scalar_ip(const VectorStore& store);
 
 } // namespace detail
 

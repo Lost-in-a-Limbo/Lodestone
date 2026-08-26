@@ -33,15 +33,24 @@ namespace lodestone {
 
 namespace {
 
-/// Scalar squared L2 against a prepared query.
+/// Scalar distance against a prepared query, for one metric.
 ///
-/// Squared, never rooted: sqrt is monotone so it cannot change a ranking, and
-/// it would cost a transcendental on the hottest path in the system. Every
-/// "distance" this project reports is a squared one, including in the recall
-/// and benchmark output, so nothing downstream needs to un-square it.
-class ScalarL2Computer final : public DistanceComputer {
+/// Templated on the metric rather than branching at run time: the metric is
+/// fixed for the lifetime of an index, so a runtime test in the innermost loop
+/// would be a perfectly predictable branch that still costs an instruction and
+/// blocks reassociation. `if constexpr` compiles each variant down to exactly
+/// the loop it needs.
+///
+/// **L2 is squared, never rooted.** sqrt is monotone so it cannot change a
+/// ranking, and it would cost a transcendental on the hottest path in the
+/// system. Every "distance" this project reports is a squared one, including in
+/// the recall and benchmark output, so nothing downstream un-squares it.
+///
+/// **Inner product is negated.** See `Metric` in distance.hpp for why.
+template <Metric metric_v>
+class ScalarComputer final : public DistanceComputer {
 public:
-  explicit ScalarL2Computer(const VectorStore& store)
+  explicit ScalarComputer(const VectorStore& store)
       : store_(store), dim_(store.dim()), stride_(store.stride()), query_(store.stride(), 0.0F) {}
 
   void prepare_query(const float* query) override {
@@ -63,7 +72,9 @@ public:
 
   [[nodiscard]] std::size_t dim() const override { return dim_; }
 
-  [[nodiscard]] Metric metric() const override { return Metric::l2; }
+  [[nodiscard]] Metric metric() const override { return metric_v; }
+
+  [[nodiscard]] KernelKind kernel() const override { return KernelKind::scalar; }
 
 private:
   /// Non-virtual, so the batch loop above makes one indirect call in total
@@ -85,10 +96,20 @@ private:
     // inflated by padding at any measured point.
     float sum = 0.0F;
     for (std::size_t i = 0; i < stride_; ++i) {
-      const float diff = stored[i] - query[i];
-      sum += diff * diff;
+      if constexpr (metric_v == Metric::l2) {
+        const float diff = stored[i] - query[i];
+        sum += diff * diff;
+      } else {
+        sum += stored[i] * query[i];
+      }
     }
-    return sum;
+
+    if constexpr (metric_v == Metric::inner_product) {
+      // Negated once, here, so every consumer can assume smaller is closer.
+      return -sum;
+    } else {
+      return sum;
+    }
   }
 
   const VectorStore& store_;
@@ -107,7 +128,11 @@ private:
 namespace detail {
 
 std::unique_ptr<DistanceComputer> make_scalar_l2(const VectorStore& store) {
-  return std::make_unique<ScalarL2Computer>(store);
+  return std::make_unique<ScalarComputer<Metric::l2>>(store);
+}
+
+std::unique_ptr<DistanceComputer> make_scalar_ip(const VectorStore& store) {
+  return std::make_unique<ScalarComputer<Metric::inner_product>>(store);
 }
 
 } // namespace detail

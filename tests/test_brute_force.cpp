@@ -396,6 +396,41 @@ TEST_CASE("diagnose_recall on a perfect result finds nothing to report",
   CHECK_FALSE(diag.boundary_tie);
 }
 
+TEST_CASE("the search and diagnostics work with negative distances",
+          "[brute_force]") {
+  // Metric::inner_product negates the dot product so that smaller still means
+  // closer, which makes every distance negative. Nothing in the bounded heap or
+  // the diagnostics may assume distances are non-negative — `worst_kept` seeded
+  // from 0.0F would report a value no neighbour has, and every boundary-tie
+  // verdict downstream of it would be wrong.
+  const auto store = line_store(10); // dim 1, values 0..9
+  auto computer = make_distance_computer(Metric::inner_product, store);
+  REQUIRE(computer != nullptr);
+
+  const float query = 1.0F;
+  std::vector<Neighbor> out(3);
+  REQUIRE(brute_force_knn(*computer, &query, store.size(), out) == Status::ok);
+
+  // Largest dot product is the largest value, id 9, and negation puts it first.
+  CHECK(out[0].id == 9U);
+  CHECK(out[0].distance == -9.0F);
+  CHECK(out[1].id == 8U);
+  CHECK(out[2].id == 7U);
+  for (std::size_t i = 1; i < out.size(); ++i) {
+    CHECK(out[i - 1].distance <= out[i].distance);
+  }
+
+  computer->prepare_query(&query);
+  const std::vector<std::int32_t> truth = {9, 8, 6};
+
+  RecallDiagnosis diag;
+  REQUIRE(diagnose_recall(*computer, out, truth, diag) == Status::ok);
+  CHECK(diag.recall == 2.0 / 3.0);
+  CHECK(diag.worst_kept == -7.0F); // the worst we kept, id 7 — not 0.0F
+  CHECK(diag.best_missed == -6.0F); // id 6
+  CHECK_FALSE(diag.boundary_tie);
+}
+
 TEST_CASE("ground-truth ids are checked against the corpus size",
           "[brute_force]") {
   // A ground-truth file paired with the wrong base file otherwise shows up as
