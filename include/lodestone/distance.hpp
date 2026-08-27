@@ -164,6 +164,8 @@ namespace detail {
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_scalar_ip(const VectorStore& store);
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_sse_l2(const VectorStore& store);
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_sse_ip(const VectorStore& store);
+[[nodiscard]] std::unique_ptr<DistanceComputer> make_avx2_l2(const VectorStore& store);
+[[nodiscard]] std::unique_ptr<DistanceComputer> make_avx2_ip(const VectorStore& store);
 
 } // namespace detail
 

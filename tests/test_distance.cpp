@@ -49,6 +49,22 @@ VectorStore make_store(std::size_t dim, const std::vector<std::vector<float>>& r
   return store;
 }
 
+/// The SIMD kernels this build and this CPU can actually construct. Iterating
+/// over it rather than hardcoding one means each new kernel is covered by every
+/// cross-kernel test the moment it lands, and a kernel this machine lacks is
+/// skipped rather than failing.
+std::vector<KernelKind> available_simd_kernels() {
+  VectorStore probe;
+  REQUIRE(probe.reserve(16, 1) == Status::ok);
+  std::vector<KernelKind> out;
+  for (const KernelKind k : {KernelKind::sse, KernelKind::avx2}) {
+    if (make_distance_computer(Metric::l2, probe, k) != nullptr) {
+      out.push_back(k);
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 TEST_CASE("the factory hands back the interface, never a concrete kernel",
@@ -267,17 +283,28 @@ TEST_CASE("the factory refuses a request it cannot serve", "[distance]") {
     CHECK(make_distance_computer(Metric::l2, empty) == nullptr);
   }
 
-  SECTION("a kernel that does not exist yet") {
+  SECTION("a kernel this CPU cannot run") {
     VectorStore store;
     REQUIRE(store.reserve(4, 1) == Status::ok);
-    // Returning nullptr rather than silently downgrading to a narrower kernel.
-    // A benchmark that asked for AVX2 and quietly got scalar would report a
-    // speedup of 1.0 and look like a slow kernel rather than a missing one.
-    CHECK(make_distance_computer(Metric::l2, store, KernelKind::avx2) == nullptr);
+    // Whatever the factory does hand back must be runnable. A kernel full of
+    // instructions the machine lacks is an illegal-instruction crash, not a
+    // wrong number, and a crash inside a benchmark loop is far worse than a
+    // nullptr at the factory. So: every kernel it offers must compute.
+    for (const KernelKind kind : {KernelKind::scalar, KernelKind::sse, KernelKind::avx2}) {
+      auto computer = make_distance_computer(Metric::l2, store, kind);
+      if (computer == nullptr) {
+        continue; // unavailable here — acceptable
+      }
+      CHECK(computer->kernel() == kind);
+      const std::vector<float> query = {1.0F, 0.0F, 0.0F, 0.0F};
+      computer->prepare_query(query.data());
+      CHECK(computer->distance_to(0) >= 0.0F);
+    }
   }
 }
 
-TEST_CASE("SSE agrees with scalar across dimensions and metrics", "[distance]") {
+TEST_CASE("every SIMD kernel agrees with scalar across dimensions and metrics",
+          "[distance]") {
   // The real cross-kernel gate. Relative, not absolute: SIFT squared-L2
   // distances run to ~5e4, and reordering a float32 sum of n terms — which is
   // exactly what vectorising does — perturbs it by roughly n*eps*magnitude. At
@@ -312,25 +339,28 @@ TEST_CASE("SSE agrees with scalar across dimensions and metrics", "[distance]") 
 
     for (const Metric metric : {Metric::l2, Metric::inner_product}) {
       auto reference = make_distance_computer(metric, store, KernelKind::scalar);
-      auto simd = make_distance_computer(metric, store, KernelKind::sse);
       REQUIRE(reference != nullptr);
-      REQUIRE(simd != nullptr);
-      CHECK(simd->kernel() == KernelKind::sse);
-
       reference->prepare_query(query.data());
-      simd->prepare_query(query.data());
 
-      for (std::size_t i = 0; i < count; ++i) {
-        const auto id = static_cast<VectorId>(i);
-        const double want = static_cast<double>(reference->distance_to(id));
-        const double got = static_cast<double>(simd->distance_to(id));
-        CHECK(got == Catch::Approx(want).epsilon(1e-5));
+      for (const KernelKind kind : available_simd_kernels()) {
+        auto simd = make_distance_computer(metric, store, kind);
+        REQUIRE(simd != nullptr);
+        CHECK(simd->kernel() == kind);
+        simd->prepare_query(query.data());
+
+        for (std::size_t i = 0; i < count; ++i) {
+          const auto id = static_cast<VectorId>(i);
+          const double want = static_cast<double>(reference->distance_to(id));
+          const double got = static_cast<double>(simd->distance_to(id));
+          CHECK(got == Catch::Approx(want).epsilon(1e-5));
+        }
       }
     }
   }
 }
 
-TEST_CASE("SSE ranks identically to scalar, which is the property that matters",
+TEST_CASE("every SIMD kernel ranks identically to scalar, which is the property "
+          "that matters",
           "[distance]") {
   // Distance agreement is the weak test. Two kernels can agree to 1e-5 and
   // still return different neighbours, because a reordering only needs the gap
@@ -357,30 +387,26 @@ TEST_CASE("SSE ranks identically to scalar, which is the property that matters",
     x = values(rng);
   }
 
-  auto reference = make_distance_computer(Metric::l2, store, KernelKind::scalar);
-  auto simd = make_distance_computer(Metric::l2, store, KernelKind::sse);
-  REQUIRE(reference != nullptr);
-  REQUIRE(simd != nullptr);
-  reference->prepare_query(query.data());
-  simd->prepare_query(query.data());
-
-  std::vector<VectorId> by_reference(count);
-  std::vector<VectorId> by_simd(count);
-  for (std::size_t i = 0; i < count; ++i) {
-    by_reference[i] = static_cast<VectorId>(i);
-    by_simd[i] = static_cast<VectorId>(i);
-  }
-  const auto sort_by = [](const DistanceComputer& c, std::vector<VectorId>& ids) {
+  const auto sort_by = [&](KernelKind kind) {
+    auto computer = make_distance_computer(Metric::l2, store, kind);
+    REQUIRE(computer != nullptr);
+    computer->prepare_query(query.data());
+    std::vector<VectorId> ids(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      ids[i] = static_cast<VectorId>(i);
+    }
     std::sort(ids.begin(), ids.end(), [&](VectorId a, VectorId b) {
-      const float da = c.distance_to(a);
-      const float db = c.distance_to(b);
+      const float da = computer->distance_to(a);
+      const float db = computer->distance_to(b);
       return da != db ? da < db : a < b;
     });
+    return ids;
   };
-  sort_by(*reference, by_reference);
-  sort_by(*simd, by_simd);
 
-  CHECK(by_reference == by_simd);
+  const auto by_reference = sort_by(KernelKind::scalar);
+  for (const KernelKind kind : available_simd_kernels()) {
+    CHECK(sort_by(kind) == by_reference);
+  }
 }
 
 TEST_CASE("the prepared query buffer is cache-line aligned", "[distance]") {

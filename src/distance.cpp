@@ -14,6 +14,28 @@
 
 namespace lodestone {
 
+namespace {
+
+/// AVX2 *and* FMA, because they are separate CPUID feature bits and the kernel
+/// uses `_mm256_fmadd_ps`. A machine with AVX2 but no FMA is exotic, and
+/// checking one bit for a kernel that needs two is exactly the sort of thing
+/// that works on every machine you own and crashes on someone else's.
+///
+/// `__builtin_cpu_supports` rather than hand-rolled CPUID: it needs no inline
+/// asm, and its AVX path already accounts for the OS having enabled XSAVE state
+/// for the YMM registers. A raw CPUID feature bit does not, and would happily
+/// select AVX2 on a kernel that does not preserve those registers across a
+/// context switch.
+bool cpu_supports_avx2() {
+#if defined(__GNUC__) || defined(__clang__)
+  return __builtin_cpu_supports("avx2") != 0 && __builtin_cpu_supports("fma") != 0;
+#else
+  return false;
+#endif
+}
+
+} // namespace
+
 KernelKind detected_kernel() {
   // Task 6 of the Phase 2 plan replaces this with __builtin_cpu_supports()
   // checks for avx2 and fma. Until the SIMD kernels exist there is nothing to
@@ -72,9 +94,22 @@ std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric,
     return nullptr;
 
   case KernelKind::avx2:
-    // Task 4. nullptr rather than a silent downgrade to a narrower kernel: a
-    // benchmark that asked for AVX2 and quietly got scalar would report a
-    // speedup of 1.0 and read as a slow kernel rather than a missing one.
+    // Gated on the CPU, even for an *explicit* request. Handing back a kernel
+    // full of instructions this machine cannot execute would be an
+    // illegal-instruction crash rather than a wrong number — and a crash inside
+    // a benchmark loop is a much worse failure than a nullptr at the factory.
+    //
+    // Task 6 reuses this check in detected_kernel(); it lives here first
+    // because correctness cannot wait for the dispatch task.
+    if (!cpu_supports_avx2()) {
+      return nullptr;
+    }
+    switch (metric) {
+    case Metric::l2:
+      return detail::make_avx2_l2(store);
+    case Metric::inner_product:
+      return detail::make_avx2_ip(store);
+    }
     return nullptr;
 
   case KernelKind::automatic:
