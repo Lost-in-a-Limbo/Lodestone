@@ -67,8 +67,7 @@ std::vector<KernelKind> available_simd_kernels() {
 
 } // namespace
 
-TEST_CASE("the factory hands back the interface, never a concrete kernel",
-          "[distance]") {
+TEST_CASE("the factory hands back the interface, never a concrete kernel", "[distance]") {
   // This is architecture rule 1 expressed as a compile-time assertion. If the
   // factory's return type ever narrows to a concrete kernel, callers can name
   // that kernel, and Phase 2's runtime CPU dispatch and Phase 5's quantised
@@ -248,8 +247,7 @@ TEST_CASE("prepare_query rebinds without leaving stale state", "[distance]") {
   CHECK(computer->distance_to(0) == 100.0F);
 }
 
-TEST_CASE("the query buffer is owned, so the caller's may go away",
-          "[distance]") {
+TEST_CASE("the query buffer is owned, so the caller's may go away", "[distance]") {
   // prepare_query() copies into an internal zero-padded buffer rather than
   // stashing the pointer. That is what makes a stride-wide kernel safe — it
   // would otherwise read past the end of the caller's dim-sized array — and it
@@ -303,8 +301,7 @@ TEST_CASE("the factory refuses a request it cannot serve", "[distance]") {
   }
 }
 
-TEST_CASE("every SIMD kernel agrees with scalar across dimensions and metrics",
-          "[distance]") {
+TEST_CASE("every SIMD kernel agrees with scalar across dimensions and metrics", "[distance]") {
   // The real cross-kernel gate. Relative, not absolute: SIFT squared-L2
   // distances run to ~5e4, and reordering a float32 sum of n terms — which is
   // exactly what vectorising does — perturbs it by roughly n*eps*magnitude. At
@@ -429,8 +426,7 @@ TEST_CASE("the prepared query buffer is cache-line aligned", "[distance]") {
   CHECK(query.data()[99] == 3.5F);
 }
 
-TEST_CASE("inner product is negated so that smaller still means closer",
-          "[distance]") {
+TEST_CASE("inner product is negated so that smaller still means closer", "[distance]") {
   // Larger dot product means *more* similar, which is backwards from L2. Every
   // consumer — the bounded heap in brute_force, Phase 3's candidate queues — is
   // written around "smaller is closer", so the kernel negates rather than
@@ -458,8 +454,7 @@ TEST_CASE("inner product is negated so that smaller still means closer",
   CHECK(computer->distance_to(0) < computer->distance_to(2));
 }
 
-TEST_CASE("under inner product a vector's distance to itself is not zero",
-          "[distance]") {
+TEST_CASE("under inner product a vector's distance to itself is not zero", "[distance]") {
   // -‖x‖², a direct consequence of the negation convention. Asserted so that
   // nobody "fixes" it into 0 and breaks the ordering in the process.
   const auto store = make_store(4, {{1.0F, 2.0F, 3.0F, 4.0F}});
@@ -496,8 +491,7 @@ TEST_CASE("inner-product padding contributes nothing either", "[distance]") {
   CHECK(static_cast<double>(computer->distance_to(0)) == Catch::Approx(-dot).epsilon(1e-5));
 }
 
-TEST_CASE("an explicit kernel request is honoured, not downgraded",
-          "[distance]") {
+TEST_CASE("an explicit kernel request is honoured, not downgraded", "[distance]") {
   VectorStore store;
   REQUIRE(store.reserve(4, 1) == Status::ok);
 
@@ -541,8 +535,7 @@ TEST_CASE("dispatch picks the widest kernel the CPU can run", "[distance]") {
   // nothing worse than a disappointing benchmark.
   const bool avx2_available =
       make_distance_computer(Metric::l2, store, KernelKind::avx2) != nullptr;
-  const bool sse_available =
-      make_distance_computer(Metric::l2, store, KernelKind::sse) != nullptr;
+  const bool sse_available = make_distance_computer(Metric::l2, store, KernelKind::sse) != nullptr;
 
   if (avx2_available) {
     CHECK(picked == KernelKind::avx2);
@@ -581,8 +574,8 @@ TEST_CASE("dispatch never selects a kernel it cannot construct", "[distance]") {
 TEST_CASE("every KernelKind has a name", "[distance]") {
   // These strings end up in results.json and benchmark output, so a missing
   // one is a hole in the record of what was measured.
-  for (const KernelKind k : {KernelKind::automatic, KernelKind::scalar, KernelKind::sse,
-                             KernelKind::avx2}) {
+  for (const KernelKind k :
+       {KernelKind::automatic, KernelKind::scalar, KernelKind::sse, KernelKind::avx2}) {
     CHECK_FALSE(kernel_name(k).empty());
     CHECK(kernel_name(k) != "unknown");
   }

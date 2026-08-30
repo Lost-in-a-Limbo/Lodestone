@@ -7,6 +7,7 @@
 // feature detection belongs here and not in distance_avx2.cpp.
 
 #include "lodestone/distance.hpp"
+
 #include "lodestone/vector_store.hpp"
 
 #include <memory>
@@ -68,8 +69,7 @@ std::string_view kernel_name(KernelKind kind) {
   return "unknown";
 }
 
-std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric,
-                                                         const VectorStore& store,
+std::unique_ptr<DistanceComputer> make_distance_computer(Metric metric, const VectorStore& store,
                                                          KernelKind kind) {
   // A store with no dimension has nothing to compute over, and a computer
   // built against one would produce zero for every pair — a plausible number,

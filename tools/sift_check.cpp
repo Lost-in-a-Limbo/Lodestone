@@ -114,8 +114,7 @@ std::optional<std::size_t> peak_rss_bytes() {
 
 std::string mib(std::size_t bytes) {
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.1f MiB",
-                static_cast<double>(bytes) / (1024.0 * 1024.0));
+  std::snprintf(buf, sizeof(buf), "%.1f MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
   return buf;
 }
 
@@ -227,8 +226,7 @@ int main(int argc, char** argv) {
     return exit_fail;
   }
   const auto load_end = std::chrono::steady_clock::now();
-  const double load_seconds =
-      std::chrono::duration<double>(load_end - load_start).count();
+  const double load_seconds = std::chrono::duration<double>(load_end - load_start).count();
 
   VectorStore queries;
   if (const Status s = lodestone::load_fvecs(query_path, queries); s != Status::ok) {
@@ -244,8 +242,7 @@ int main(int argc, char** argv) {
     return exit_fail;
   }
 
-  const std::size_t bytes_per_vector_on_disk =
-      sizeof(std::int32_t) + (base.dim() * sizeof(float));
+  const std::size_t bytes_per_vector_on_disk = sizeof(std::int32_t) + (base.dim() * sizeof(float));
 
   std::printf("loaded %zu x %zu from %s in %.2f s\n", base.size(), base.dim(),
               base_path.filename().string().c_str(), load_seconds);
@@ -260,8 +257,7 @@ int main(int argc, char** argv) {
   // ---- shape checks -------------------------------------------------------
 
   if (queries.dim() != base.dim()) {
-    std::fprintf(stderr, "error: query dim %zu != base dim %zu\n", queries.dim(),
-                 base.dim());
+    std::fprintf(stderr, "error: query dim %zu != base dim %zu\n", queries.dim(), base.dim());
     return exit_fail;
   }
   if (truth.count != queries.size()) {
@@ -270,8 +266,8 @@ int main(int argc, char** argv) {
     return exit_fail;
   }
   if (truth.dim < k_neighbors) {
-    std::fprintf(stderr, "error: ground truth has %zu neighbours per row, need %zu\n",
-                 truth.dim, k_neighbors);
+    std::fprintf(stderr, "error: ground truth has %zu neighbours per row, need %zu\n", truth.dim,
+                 k_neighbors);
     return exit_fail;
   }
 
@@ -280,8 +276,7 @@ int main(int argc, char** argv) {
   // blamed on the search.
   if (const Status s = lodestone::validate_ground_truth_ids(truth.data, base.size());
       s != Status::ok) {
-    std::fprintf(stderr, "error: ground truth contains ids outside [0, %zu)\n",
-                 base.size());
+    std::fprintf(stderr, "error: ground truth contains ids outside [0, %zu)\n", base.size());
     return exit_fail;
   }
 
@@ -315,8 +310,8 @@ int main(int argc, char** argv) {
     }
   }
   if (order_violations != 0) {
-    std::printf("ground truth: %zu of %zu rows are not sorted under our metric\n",
-                order_violations, query_count);
+    std::printf("ground truth: %zu of %zu rows are not sorted under our metric\n", order_violations,
+                query_count);
   } else {
     std::printf("ground truth: %zu rows, ids in range, order agrees with our metric\n",
                 query_count);
@@ -337,8 +332,7 @@ int main(int argc, char** argv) {
     const Status s = lodestone::brute_force_knn(
         *computer, queries.get(static_cast<lodestone::VectorId>(i)), base.size(), got);
     if (s != Status::ok) {
-      std::fprintf(stderr, "error: query %zu failed: %s\n", i,
-                   std::string(status_name(s)).c_str());
+      std::fprintf(stderr, "error: query %zu failed: %s\n", i, std::string(status_name(s)).c_str());
       return exit_fail;
     }
 
@@ -357,20 +351,17 @@ int main(int argc, char** argv) {
 
     if (progress_every != 0 && (i + 1) % progress_every == 0) {
       const double elapsed =
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - search_start)
-              .count();
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - search_start).count();
       const double done = static_cast<double>(i + 1);
-      std::fprintf(stderr, "\r  %zu/%zu queries, %.0f s elapsed, ~%.0f s left",
-                   i + 1, query_count, elapsed,
-                   elapsed * (static_cast<double>(query_count) - done) / done);
+      std::fprintf(stderr, "\r  %zu/%zu queries, %.0f s elapsed, ~%.0f s left", i + 1, query_count,
+                   elapsed, elapsed * (static_cast<double>(query_count) - done) / done);
     }
   }
   if (progress_every != 0) {
     std::fprintf(stderr, "\r%*s\r", 70, "");
   }
   const auto search_end = std::chrono::steady_clock::now();
-  const double search_seconds =
-      std::chrono::duration<double>(search_end - search_start).count();
+  const double search_seconds = std::chrono::duration<double>(search_end - search_start).count();
 
   const double qps =
       (search_seconds > 0.0) ? static_cast<double>(query_count) / search_seconds : 0.0;
@@ -379,8 +370,7 @@ int main(int argc, char** argv) {
 
   std::printf("brute force: %zu queries, k=%zu, %.2f QPS (%.1f s total)\n", query_count,
               k_neighbors, qps, search_seconds);
-  std::printf("mean recall@%zu = %.6f   (strict id-set match)\n", k_neighbors,
-              mean_recall);
+  std::printf("mean recall@%zu = %.6f   (strict id-set match)\n", k_neighbors, mean_recall);
   std::printf("mean recall@%zu = %.6f   (tie-aware, thresholded on the k-th true "
               "distance)\n",
               k_neighbors, mean_tied_recall);
@@ -408,8 +398,8 @@ int main(int argc, char** argv) {
                   "queries\n",
                   k_neighbors, query_count);
     } else {
-      std::printf("PASS: tie-aware recall@%zu is exactly 1.000000 over %zu queries.\n",
-                  k_neighbors, query_count);
+      std::printf("PASS: tie-aware recall@%zu is exactly 1.000000 over %zu queries.\n", k_neighbors,
+                  query_count);
       std::printf("      %zu queries differ from the reference id set, every one of "
                   "them\n"
                   "      on the k-th boundary — a tie, not a miss. Details below.\n",
@@ -439,15 +429,14 @@ int main(int argc, char** argv) {
 
     // Re-run the query so the diagnosis sees its own result. Only failing
     // queries pay for this, so it stays outside the timed loop above.
-    if (lodestone::brute_force_knn(*computer,
-                                  queries.get(static_cast<lodestone::VectorId>(i)),
-                                  base.size(), got) != Status::ok) {
+    if (lodestone::brute_force_knn(*computer, queries.get(static_cast<lodestone::VectorId>(i)),
+                                   base.size(), got) != Status::ok) {
       continue;
     }
 
     RecallDiagnosis diag;
-    if (lodestone::diagnose_recall(*computer, got, truth.row(i).first(k_neighbors),
-                                   diag) != Status::ok) {
+    if (lodestone::diagnose_recall(*computer, got, truth.row(i).first(k_neighbors), diag) !=
+        Status::ok) {
       continue;
     }
     if (diag.boundary_tie) {
@@ -458,9 +447,8 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    std::printf("  query %zu: recall %.4f  worst_kept %.6g  best_missed %.6g  %s\n", i,
-                diag.recall, static_cast<double>(diag.worst_kept),
-                static_cast<double>(diag.best_missed),
+    std::printf("  query %zu: recall %.4f  worst_kept %.6g  best_missed %.6g  %s\n", i, diag.recall,
+                static_cast<double>(diag.worst_kept), static_cast<double>(diag.best_missed),
                 diag.boundary_tie ? "<- boundary tie" : "<- REAL MISS");
     std::printf("    missed:");
     for (const auto id : diag.missed) {

@@ -107,8 +107,7 @@ make_hnsw_index(const VectorStore& store, Metric metric, const HnswConfig& confi
 /// match the store handed in — pairing an index with the wrong corpus would
 /// otherwise show up as mysteriously poor recall.
 [[nodiscard]] std::unique_ptr<HnswIndex> load_hnsw_index(const std::filesystem::path& path,
-                                                         const VectorStore& store,
-                                                         Metric metric);
+                                                         const VectorStore& store, Metric metric);
 
 namespace detail {
 

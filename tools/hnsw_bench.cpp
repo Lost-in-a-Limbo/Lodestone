@@ -93,18 +93,16 @@ struct SweepRow {
 };
 
 void usage() {
-  std::fprintf(stderr,
-               "usage: hnsw_bench <base.fvecs> <query.fvecs> <groundtruth.ivecs>\n"
-               "         [--ef=8,16,32,64,128,256] [--m=16] [--ef-construction=200]\n"
-               "         [--selection=heuristic|simple|both] [--min-recall=0.95]\n"
-               "         [--queries=N] [--save=PATH]\n");
+  std::fprintf(stderr, "usage: hnsw_bench <base.fvecs> <query.fvecs> <groundtruth.ivecs>\n"
+                       "         [--ef=8,16,32,64,128,256] [--m=16] [--ef-construction=200]\n"
+                       "         [--selection=heuristic|simple|both] [--min-recall=0.95]\n"
+                       "         [--queries=N] [--save=PATH]\n");
 }
 
 /// One full sweep for a given index. Returns the best tie-aware recall seen.
 double sweep(const HnswIndex& index, const VectorStore& base, const VectorStore& queries,
              const IvecsData& truth, const std::vector<std::size_t>& ef_values,
-             std::size_t query_count, DistanceComputer& exact,
-             std::vector<SweepRow>& rows) {
+             std::size_t query_count, DistanceComputer& exact, std::vector<SweepRow>& rows) {
   double best = 0.0;
   std::vector<Neighbor> got(k_neighbors);
 
@@ -114,8 +112,7 @@ double sweep(const HnswIndex& index, const VectorStore& base, const VectorStore&
     // phase reports — skipped rather than silently clamped, because a row
     // labelled ef=8 that actually ran at ef=10 would be a lie in a table.
     if (ef < k_neighbors) {
-      std::printf("  ef=%-4zu  skipped: ef < k=%zu cannot return k results\n", ef,
-                  k_neighbors);
+      std::printf("  ef=%-4zu  skipped: ef < k=%zu cannot return k results\n", ef, k_neighbors);
       continue;
     }
 
@@ -180,9 +177,7 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
-    const auto value_of = [&](std::string_view prefix) {
-      return arg.substr(prefix.size());
-    };
+    const auto value_of = [&](std::string_view prefix) { return arg.substr(prefix.size()); };
     if (arg.starts_with("--ef=")) {
       std::string list{value_of("--ef=")};
       std::size_t pos = 0;
@@ -250,8 +245,7 @@ int main(int argc, char** argv) {
   VectorStore base;
   VectorStore queries;
   IvecsData truth;
-  if (load_fvecs(base_path, base) != Status::ok ||
-      load_fvecs(query_path, queries) != Status::ok ||
+  if (load_fvecs(base_path, base) != Status::ok || load_fvecs(query_path, queries) != Status::ok ||
       load_ivecs(truth_path, truth) != Status::ok) {
     std::fprintf(stderr, "error: could not load the dataset\n");
     return exit_fail;
@@ -270,20 +264,19 @@ int main(int argc, char** argv) {
     return exit_fail;
   }
 
-  std::printf("corpus %zu x %zu, %zu queries, kernel %s\n", base.size(), base.dim(),
-              query_count, std::string(kernel_name(detected_kernel())).c_str());
-  std::printf("config M=%zu M_max0=%zu ef_construction=%zu seed=%llu\n", config.m,
-              config.m_max0, config.ef_construction,
-              static_cast<unsigned long long>(config.seed));
+  std::printf("corpus %zu x %zu, %zu queries, kernel %s\n", base.size(), base.dim(), query_count,
+              std::string(kernel_name(detected_kernel())).c_str());
+  std::printf("config M=%zu M_max0=%zu ef_construction=%zu seed=%llu\n", config.m, config.m_max0,
+              config.ef_construction, static_cast<unsigned long long>(config.seed));
 
-  const std::vector<std::string> selections =
-      (selection == "both") ? std::vector<std::string>{"heuristic", "simple"}
-                            : std::vector<std::string>{selection};
+  const std::vector<std::string> selections = (selection == "both")
+                                                  ? std::vector<std::string>{"heuristic", "simple"}
+                                                  : std::vector<std::string>{selection};
 
   double best_overall = 0.0;
   for (const auto& sel : selections) {
-    const auto kind = (sel == "simple") ? NeighbourSelection::simple
-                                        : NeighbourSelection::heuristic;
+    const auto kind =
+        (sel == "simple") ? NeighbourSelection::simple : NeighbourSelection::heuristic;
 
     auto index = make_hnsw_index(base, Metric::l2, config, kind);
     if (index == nullptr) {
@@ -300,8 +293,8 @@ int main(int argc, char** argv) {
         return exit_fail;
       }
       if (base.size() > 100000 && (i + 1) % report_every == 0) {
-        std::fprintf(stderr, "\r  building %zu%% (%.0f s)",
-                     100 * (i + 1) / base.size(), seconds_since(build_start));
+        std::fprintf(stderr, "\r  building %zu%% (%.0f s)", 100 * (i + 1) / base.size(),
+                     seconds_since(build_start));
       }
     }
     const double build_seconds = seconds_since(build_start);
@@ -310,15 +303,14 @@ int main(int argc, char** argv) {
     }
 
     std::printf("  build %.1f s (%.0f vectors/s), graph %s, max level %zu\n", build_seconds,
-                static_cast<double>(base.size()) / build_seconds,
-                mib(index->graph_bytes()).c_str(), index->max_level());
+                static_cast<double>(base.size()) / build_seconds, mib(index->graph_bytes()).c_str(),
+                index->max_level());
     if (const auto rss = peak_rss_bytes()) {
       std::printf("  peak RSS %s (store %s)\n", mib(*rss).c_str(), mib(base.bytes()).c_str());
     }
 
     std::vector<SweepRow> rows;
-    const double best = sweep(*index, base, queries, truth, ef_values, query_count, *exact,
-                              rows);
+    const double best = sweep(*index, base, queries, truth, ef_values, query_count, *exact, rows);
     if (best < 0.0) {
       return exit_fail;
     }
@@ -333,8 +325,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::printf("\nbest tie-aware recall@%zu = %.4f (required %.4f)\n", k_neighbors,
-              best_overall, min_recall);
+  std::printf("\nbest tie-aware recall@%zu = %.4f (required %.4f)\n", k_neighbors, best_overall,
+              min_recall);
   if (best_overall + 1e-9 < min_recall) {
     std::printf("FAIL: no ef reached the required recall\n");
     return exit_fail;

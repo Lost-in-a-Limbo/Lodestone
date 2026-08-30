@@ -108,8 +108,7 @@ public:
 
 private:
   /// One fused multiply-add step against accumulator `acc` at offset `offset`.
-  inline void step(__m256& acc, const float* stored, const float* query,
-                   std::size_t offset) const {
+  inline void step(__m256& acc, const float* stored, const float* query, std::size_t offset) const {
     const __m256 a = _mm256_load_ps(stored + offset);
     const __m256 b = _mm256_load_ps(query + offset);
     if constexpr (metric_v == Metric::l2) {
@@ -194,8 +193,7 @@ std::unique_ptr<DistanceComputer> make_avx2_ip(const VectorStore& store) {
   return make_with<default_accumulators>(Metric::inner_product, store);
 }
 
-std::unique_ptr<DistanceComputer> make_avx2_experiment(Metric metric,
-                                                       const VectorStore& store,
+std::unique_ptr<DistanceComputer> make_avx2_experiment(Metric metric, const VectorStore& store,
                                                        std::size_t accumulators) {
   switch (accumulators) {
   case 1:

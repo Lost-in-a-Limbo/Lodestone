@@ -133,13 +133,11 @@ private:
 class HnswIndexImpl final : public HnswIndex {
 public:
   HnswIndexImpl(const VectorStore& store, Metric metric, const HnswConfig& config,
-                NeighbourSelection selection,
-                std::unique_ptr<DistanceComputer> computer,
+                NeighbourSelection selection, std::unique_ptr<DistanceComputer> computer,
                 std::unique_ptr<DistanceComputer> build_computer)
       : store_(store), config_(config), selection_(selection), metric_(metric),
         computer_(std::move(computer)), build_computer_(std::move(build_computer)),
-        level_multiplier_(detail::level_multiplier_for(config.m)),
-        rng_state_(config.seed) {
+        level_multiplier_(detail::level_multiplier_for(config.m)), rng_state_(config.seed) {
     const std::size_t capacity = store_.size();
     level0_stride_ = config_.m_max0 + 1;
     upper_stride_ = config_.m + 1;
@@ -216,8 +214,7 @@ private:
   }
 
   /// Slot 0 of every list holds the degree; the neighbours follow it.
-  [[nodiscard]] std::span<const VectorId> neighbours_view(VectorId id,
-                                                          std::size_t level) const {
+  [[nodiscard]] std::span<const VectorId> neighbours_view(VectorId id, std::size_t level) const {
     if (level > levels_[id] || inserted_[id] == 0) {
       return {};
     }
@@ -244,8 +241,7 @@ private:
   static void select_neighbours_simple(std::vector<Candidate>& candidates, std::size_t m);
 
   /// Algorithm 4, the one that matters for recall.
-  void select_neighbours_heuristic(DistanceComputer& computer,
-                                   std::vector<Candidate>& candidates,
+  void select_neighbours_heuristic(DistanceComputer& computer, std::vector<Candidate>& candidates,
                                    std::size_t m) const;
 
   void select_neighbours(DistanceComputer& computer, std::vector<Candidate>& candidates,
@@ -301,8 +297,7 @@ private:
 };
 
 void HnswIndexImpl::search_layer(const DistanceComputer& computer, VectorId entry,
-                                 float entry_distance, std::size_t ef,
-                                 std::size_t level) const {
+                                 float entry_distance, std::size_t ef, std::size_t level) const {
   candidates_.clear();
   results_.clear();
 
@@ -376,8 +371,7 @@ void HnswIndexImpl::search_layer(const DistanceComputer& computer, VectorId entr
   }
 }
 
-void HnswIndexImpl::select_neighbours_simple(std::vector<Candidate>& candidates,
-                                             std::size_t m) {
+void HnswIndexImpl::select_neighbours_simple(std::vector<Candidate>& candidates, std::size_t m) {
   std::sort(candidates.begin(), candidates.end(), Closer{});
   if (candidates.size() > m) {
     candidates.resize(m);
@@ -426,9 +420,8 @@ void HnswIndexImpl::select_neighbours_heuristic(DistanceComputer& computer,
   candidates = working_;
 }
 
-void HnswIndexImpl::descend_to(const DistanceComputer& computer, VectorId& current,
-                               float& distance, std::size_t from_level,
-                               std::size_t to_level) const {
+void HnswIndexImpl::descend_to(const DistanceComputer& computer, VectorId& current, float& distance,
+                               std::size_t from_level, std::size_t to_level) const {
   for (std::size_t level = from_level; level > to_level; --level) {
     bool moved = true;
     while (moved) {
@@ -661,8 +654,7 @@ Status HnswIndexImpl::save(const std::filesystem::path& path) const {
 } // namespace
 
 std::unique_ptr<HnswIndex> make_hnsw_index(const VectorStore& store, Metric metric,
-                                           const HnswConfig& config,
-                                           NeighbourSelection selection) {
+                                           const HnswConfig& config, NeighbourSelection selection) {
   if (store.size() == 0 || store.dim() == 0) {
     return nullptr;
   }
@@ -681,8 +673,8 @@ std::unique_ptr<HnswIndex> make_hnsw_index(const VectorStore& store, Metric metr
     return nullptr;
   }
 
-  return std::make_unique<HnswIndexImpl>(store, metric, config, selection,
-                                         std::move(computer), std::move(build_computer));
+  return std::make_unique<HnswIndexImpl>(store, metric, config, selection, std::move(computer),
+                                         std::move(build_computer));
 }
 
 std::unique_ptr<HnswIndex> load_hnsw_index(const std::filesystem::path& path,
@@ -762,8 +754,8 @@ std::unique_ptr<HnswIndex> load_hnsw_index(const std::filesystem::path& path,
     return nullptr;
   }
 
-  impl->restore(std::move(level0), std::move(upper), std::move(levels), count, max_level,
-                entry, rng_state);
+  impl->restore(std::move(level0), std::move(upper), std::move(levels), count, max_level, entry,
+                rng_state);
   return index;
 }
 

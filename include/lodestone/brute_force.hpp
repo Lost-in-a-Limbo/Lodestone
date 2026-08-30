@@ -49,7 +49,7 @@ Status brute_force_knn(DistanceComputer& computer, const float* query, std::size
 ///
 /// A set measure: the order within the returned k does not affect it.
 [[nodiscard]] double recall_at_k(std::span<const Neighbor> got,
-                                std::span<const std::int32_t> truth);
+                                 std::span<const std::int32_t> truth);
 
 /// recall@k measured against the k-th true *distance* rather than the k-th true
 /// *id set*.
@@ -73,8 +73,8 @@ Status brute_force_knn(DistanceComputer& computer, const float* query, std::size
 ///
 /// `computer` must already have the query prepared that produced `got`.
 [[nodiscard]] double recall_at_k_tied(const DistanceComputer& computer,
-                                     std::span<const Neighbor> got,
-                                     std::span<const std::int32_t> truth);
+                                      std::span<const Neighbor> got,
+                                      std::span<const std::int32_t> truth);
 
 /// Why a recall figure came out below 1.000.
 ///

@@ -70,8 +70,7 @@ TEST_CASE("brute force finds the exact nearest neighbours", "[brute_force]") {
   CHECK(out[2].distance == 4.0F); // (2-0)^2, squared — not 2
 }
 
-TEST_CASE("equal distances order by id, and do so reproducibly",
-          "[brute_force]") {
+TEST_CASE("equal distances order by id, and do so reproducibly", "[brute_force]") {
   // Query at 5.0 on the line: ids 4 and 6 are both at distance 1. Sorting on
   // distance alone would leave their arrangement to whatever the heap did, so
   // a rerun could return a different-but-equally-correct answer. This function
@@ -155,8 +154,7 @@ TEST_CASE("brute force rejects impossible requests", "[brute_force]") {
   }
 }
 
-TEST_CASE("brute force matches an independent full-scan reference",
-          "[brute_force]") {
+TEST_CASE("brute force matches an independent full-scan reference", "[brute_force]") {
   // The reference sorts *every* id by the computer's own distance, so this
   // isolates the selection logic — the bounded heap and the block batching —
   // from kernel precision, which Task 3 already covers.
@@ -258,8 +256,7 @@ TEST_CASE("recall_at_k counts set overlap", "[brute_force]") {
   }
 }
 
-TEST_CASE("recall_at_k reads only the first k of a longer truth row",
-          "[brute_force]") {
+TEST_CASE("recall_at_k reads only the first k of a longer truth row", "[brute_force]") {
   // TEXMEX ground truth holds the top 100 per query, so recall@10 must compare
   // against the first 10 and ignore the rest. Consulting all 100 would score a
   // wrong answer as correct whenever it happened to land in ranks 11-100 —
@@ -280,8 +277,7 @@ TEST_CASE("recall_at_k reads only the first k of a longer truth row",
   }
 }
 
-TEST_CASE("recall_at_k_tied forgives a distance tie but not a real miss",
-          "[brute_force]") {
+TEST_CASE("recall_at_k_tied forgives a distance tie but not a real miss", "[brute_force]") {
   // The case this exists for, in miniature. On SIFT1M it is caused by the
   // 14,538 byte-identical duplicate vectors in the corpus: when a duplicate
   // lands on the k-th boundary, several id sets are equally correct answers and
@@ -326,8 +322,7 @@ TEST_CASE("recall_at_k_tied forgives a distance tie but not a real miss",
   }
 }
 
-TEST_CASE("diagnose_recall names what was missed and what replaced it",
-          "[brute_force]") {
+TEST_CASE("diagnose_recall names what was missed and what replaced it", "[brute_force]") {
   const auto store = line_store(10);
   auto computer = make_distance_computer(Metric::l2, store);
   REQUIRE(computer != nullptr);
@@ -377,8 +372,7 @@ TEST_CASE("diagnose_recall recognises a boundary tie", "[brute_force]") {
   CHECK(diag.boundary_tie);
 }
 
-TEST_CASE("diagnose_recall on a perfect result finds nothing to report",
-          "[brute_force]") {
+TEST_CASE("diagnose_recall on a perfect result finds nothing to report", "[brute_force]") {
   const auto store = line_store(10);
   auto computer = make_distance_computer(Metric::l2, store);
   REQUIRE(computer != nullptr);
@@ -396,8 +390,7 @@ TEST_CASE("diagnose_recall on a perfect result finds nothing to report",
   CHECK_FALSE(diag.boundary_tie);
 }
 
-TEST_CASE("the search and diagnostics work with negative distances",
-          "[brute_force]") {
+TEST_CASE("the search and diagnostics work with negative distances", "[brute_force]") {
   // Metric::inner_product negates the dot product so that smaller still means
   // closer, which makes every distance negative. Nothing in the bounded heap or
   // the diagnostics may assume distances are non-negative — `worst_kept` seeded
@@ -426,13 +419,12 @@ TEST_CASE("the search and diagnostics work with negative distances",
   RecallDiagnosis diag;
   REQUIRE(diagnose_recall(*computer, out, truth, diag) == Status::ok);
   CHECK(diag.recall == 2.0 / 3.0);
-  CHECK(diag.worst_kept == -7.0F); // the worst we kept, id 7 — not 0.0F
+  CHECK(diag.worst_kept == -7.0F);  // the worst we kept, id 7 — not 0.0F
   CHECK(diag.best_missed == -6.0F); // id 6
   CHECK_FALSE(diag.boundary_tie);
 }
 
-TEST_CASE("ground-truth ids are checked against the corpus size",
-          "[brute_force]") {
+TEST_CASE("ground-truth ids are checked against the corpus size", "[brute_force]") {
   // A ground-truth file paired with the wrong base file otherwise shows up as
   // a low recall number that gets blamed on the algorithm.
   SECTION("in range") {
@@ -451,8 +443,7 @@ TEST_CASE("ground-truth ids are checked against the corpus size",
   }
 }
 
-TEST_CASE("ground-truth row order is checked against our own metric",
-          "[brute_force]") {
+TEST_CASE("ground-truth row order is checked against our own metric", "[brute_force]") {
   const auto store = line_store(10);
   auto computer = make_distance_computer(Metric::l2, store);
   REQUIRE(computer != nullptr);

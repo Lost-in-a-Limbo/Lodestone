@@ -103,8 +103,7 @@ constexpr std::size_t padded_dim = 100; // stride 112 — the case SIFT hides
 
 } // namespace
 
-TEST_CASE("probe_vecs reports the shape from the header and the file size",
-          "[io]") {
+TEST_CASE("probe_vecs reports the shape from the header and the file size", "[io]") {
   const TempDir dir;
 
   // 3 records of 4 floats: 3 * (4 + 16) = 60 bytes.
@@ -123,9 +122,8 @@ TEST_CASE("fvecs round-trips bit-exactly", "[io]") {
   for (const std::size_t dim : {padded_dim, sift_dim}) {
     const std::size_t count = 5;
     const auto flat = float_ramp(dim, count);
-    const auto path =
-        dir.write("rt_" + std::to_string(dim) + ".fvecs",
-                  encode<float>(static_cast<std::int32_t>(dim), flat));
+    const auto path = dir.write("rt_" + std::to_string(dim) + ".fvecs",
+                                encode<float>(static_cast<std::int32_t>(dim), flat));
 
     VectorStore store;
     REQUIRE(load_fvecs(path, store) == Status::ok);
@@ -150,8 +148,8 @@ TEST_CASE("loading does not disturb the store's zeroed padding", "[io]") {
   // not merely after a fresh reserve().
   const TempDir dir;
   const auto flat = float_ramp(padded_dim, 4);
-  const auto path = dir.write("pad.fvecs",
-                              encode<float>(static_cast<std::int32_t>(padded_dim), flat));
+  const auto path =
+      dir.write("pad.fvecs", encode<float>(static_cast<std::int32_t>(padded_dim), flat));
 
   VectorStore store;
   REQUIRE(load_fvecs(path, store) == Status::ok);
@@ -264,14 +262,10 @@ TEST_CASE("ivecs round-trips, negatives included", "[io]") {
   // negative value is its caller's problem to interpret. Ground-truth id
   // validation belongs in Task 4, against a known corpus size.
   const TempDir dir;
-  const std::vector<std::int32_t> flat = {0,
-                                          -1,
-                                          7,
-                                          std::numeric_limits<std::int32_t>::max(),
-                                          3,
-                                          std::numeric_limits<std::int32_t>::min(),
-                                          100,
-                                          42};
+  const std::vector<std::int32_t> flat = {0,   -1,
+                                          7,   std::numeric_limits<std::int32_t>::max(),
+                                          3,   std::numeric_limits<std::int32_t>::min(),
+                                          100, 42};
   const auto path = dir.write("gt.ivecs", encode<std::int32_t>(4, flat));
 
   IvecsData data;

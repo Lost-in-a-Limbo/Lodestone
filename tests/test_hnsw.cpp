@@ -19,10 +19,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <string>
 #include <map>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 using namespace lodestone;
@@ -329,8 +329,7 @@ TEST_CASE("larger ef does not lower recall", "[hnsw]") {
   CHECK(previous > 0.95);
 }
 
-TEST_CASE("the neighbour heuristic and simple selection both build usable graphs",
-          "[hnsw]") {
+TEST_CASE("the neighbour heuristic and simple selection both build usable graphs", "[hnsw]") {
   // Both stay in the tree so the recall gap between them can be *measured*
   // rather than asserted — it is the most-asked question about an HNSW
   // implementation. Phase 3 task 7 records the number on SIFT1M; this only

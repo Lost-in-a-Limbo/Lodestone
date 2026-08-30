@@ -51,11 +51,11 @@ TEST_CASE("stride rounds a dimension up to 16 floats", "[vector_store]") {
     std::size_t expected_stride;
   };
   const Case cases[] = {
-      {1, 16},    // smallest possible: a whole line for one float
-      {16, 16},   // exact fit, no padding
-      {17, 32},   // one float over, costs a whole line
-      {100, 112}, // the case SIFT and GIST both hide
-      {128, 128}, // SIFT — exact
+      {1, 16},                // smallest possible: a whole line for one float
+      {16, 16},               // exact fit, no padding
+      {17, 32},               // one float over, costs a whole line
+      {100, 112},             // the case SIFT and GIST both hide
+      {128, 128},             // SIFT — exact
       {129, 144}, {960, 960}, // GIST — exact
   };
 
@@ -69,8 +69,7 @@ TEST_CASE("stride rounds a dimension up to 16 floats", "[vector_store]") {
   }
 }
 
-TEST_CASE("every vector starts on a cache line, not just the first",
-          "[vector_store]") {
+TEST_CASE("every vector starts on a cache line, not just the first", "[vector_store]") {
   // Aligning only the base pointer is the easy mistake. It looks correct at
   // dim 128, where the stride happens to preserve alignment for free, and
   // silently misaligns every vector after the first at dim 100.
@@ -116,8 +115,7 @@ TEST_CASE("the whole allocation is zeroed, padding included", "[vector_store]") 
   }
 }
 
-TEST_CASE("add returns sequential ids and round-trips the payload",
-          "[vector_store]") {
+TEST_CASE("add returns sequential ids and round-trips the payload", "[vector_store]") {
   for (const std::size_t dim : {padded_dim, sift_dim}) {
     VectorStore store;
     REQUIRE(store.reserve(dim, 3) == Status::ok);
@@ -187,8 +185,7 @@ TEST_CASE("reserve validates its arguments", "[vector_store]") {
   CHECK(store.bytes() == 0);
 }
 
-TEST_CASE("reserve rejects a capacity VectorId cannot address",
-          "[vector_store]") {
+TEST_CASE("reserve rejects a capacity VectorId cannot address", "[vector_store]") {
   // Ids are uint32_t (DECISIONS.md D2), and invalid_id is its maximum. A
   // capacity beyond that would hand out an id that collides with the
   // empty-slot marker in a neighbour list — a corruption that would surface
@@ -207,8 +204,7 @@ TEST_CASE("reserve rejects a size that would overflow", "[vector_store]") {
   CHECK(store.capacity() == 0);
 }
 
-TEST_CASE("reserve twice resets the store and frees the old block",
-          "[vector_store]") {
+TEST_CASE("reserve twice resets the store and frees the old block", "[vector_store]") {
   // ASan is on in the debug preset, so a leaked first allocation fails here.
   VectorStore store;
   REQUIRE(store.reserve(4, 2) == Status::ok);
@@ -226,8 +222,7 @@ TEST_CASE("reserve twice resets the store and frees the old block",
   CHECK(store.get(0)[0] == 0.0F);
 }
 
-TEST_CASE("bytes() reports the real allocation, padding included",
-          "[vector_store]") {
+TEST_CASE("bytes() reports the real allocation, padding included", "[vector_store]") {
   VectorStore store;
   REQUIRE(store.reserve(100, 10) == Status::ok);
   // 10 vectors x 112 floats x 4 bytes — the 12 padding floats per vector are
@@ -250,9 +245,9 @@ TEST_CASE("moving a store transfers the allocation", "[vector_store]") {
 
     // The moved-from store must be empty, not merely unspecified: its
     // destructor is about to run, and a double free is the failure mode.
-    CHECK(source.size() == 0);       // NOLINT(bugprone-use-after-move)
-    CHECK(source.capacity() == 0);   // NOLINT(bugprone-use-after-move)
-    CHECK(source.bytes() == 0);      // NOLINT(bugprone-use-after-move)
+    CHECK(source.size() == 0);     // NOLINT(bugprone-use-after-move)
+    CHECK(source.capacity() == 0); // NOLINT(bugprone-use-after-move)
+    CHECK(source.bytes() == 0);    // NOLINT(bugprone-use-after-move)
   }
 
   SECTION("move assignment frees the destination's old block") {

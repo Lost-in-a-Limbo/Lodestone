@@ -61,5 +61,5 @@ jobs:
 
       - name: Check formatting
         run: |
-          find include src tests bench -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null \
+          find include src tests bench tools -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null \
             | xargs --no-run-if-empty clang-format-14 --dry-run --Werror

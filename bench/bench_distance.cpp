@@ -60,7 +60,9 @@ constexpr std::size_t stream_target_bytes = 256UL * 1024 * 1024;
 /// here is the batch size it will see in the real scan.
 constexpr std::size_t scan_batch = 256;
 
-constexpr std::size_t round_up_16(std::size_t n) { return ((n + 15) / 16) * 16; }
+constexpr std::size_t round_up_16(std::size_t n) {
+  return ((n + 15) / 16) * 16;
+}
 
 enum class Residency : std::uint8_t { l1, stream };
 
@@ -75,8 +77,7 @@ const VectorStore& shared_store(std::size_t dim, Residency residency) {
     return store;
   }
 
-  const std::size_t target =
-      (residency == Residency::l1) ? l1_target_bytes : stream_target_bytes;
+  const std::size_t target = (residency == Residency::l1) ? l1_target_bytes : stream_target_bytes;
   const std::size_t bytes_each = round_up_16(dim) * sizeof(float);
   const std::size_t count = std::max<std::size_t>(1, target / bytes_each);
 
@@ -112,8 +113,8 @@ const VectorStore& shared_store(std::size_t dim, Residency residency) {
   return store;
 }
 
-void run_with(benchmark::State& state, DistanceComputer& computer,
-              const VectorStore& store, std::size_t dim) {
+void run_with(benchmark::State& state, DistanceComputer& computer, const VectorStore& store,
+              std::size_t dim) {
   std::vector<float> query(dim);
   {
     std::mt19937 rng(4242);
@@ -162,9 +163,8 @@ void run_with(benchmark::State& state, DistanceComputer& computer,
   // information; this is here because ns/distance is what PRD Phase 2 asks to
   // record and deriving it by hand invites arithmetic slips.
   state.counters["s/dist"] =
-      benchmark::Counter(static_cast<double>(count),
-                         benchmark::Counter::kIsIterationInvariantRate |
-                             benchmark::Counter::kInvert);
+      benchmark::Counter(static_cast<double>(count), benchmark::Counter::kIsIterationInvariantRate |
+                                                         benchmark::Counter::kInvert);
 }
 
 void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t dim,
@@ -211,8 +211,8 @@ void register_accumulator_sweep() {
     return; // no AVX2 on this CPU
   }
 
-  for (const std::size_t accumulators : {std::size_t{1}, std::size_t{2}, std::size_t{4},
-                                         std::size_t{8}}) {
+  for (const std::size_t accumulators :
+       {std::size_t{1}, std::size_t{2}, std::size_t{4}, std::size_t{8}}) {
     for (const Residency residency : {Residency::l1, Residency::stream}) {
       for (const std::size_t dim : {std::size_t{128}, std::size_t{960}}) {
         std::string name = "acc";
@@ -224,8 +224,7 @@ void register_accumulator_sweep() {
 
         benchmark::RegisterBenchmark(name, [=](benchmark::State& state) {
           const VectorStore& store = shared_store(dim, residency);
-          auto computer =
-              lodestone::detail::make_avx2_experiment(Metric::l2, store, accumulators);
+          auto computer = lodestone::detail::make_avx2_experiment(Metric::l2, store, accumulators);
           if (computer == nullptr) {
             state.SkipWithError("accumulator count unavailable");
             return;
@@ -238,8 +237,7 @@ void register_accumulator_sweep() {
 }
 
 void register_all() {
-  for (const KernelKind kernel :
-       {KernelKind::scalar, KernelKind::sse, KernelKind::avx2}) {
+  for (const KernelKind kernel : {KernelKind::scalar, KernelKind::sse, KernelKind::avx2}) {
     if (!kernel_available(kernel)) {
       continue;
     }
@@ -258,9 +256,8 @@ void register_all() {
           name += "/dim";
           name += std::to_string(dim);
 
-          benchmark::RegisterBenchmark(name, [=](benchmark::State& state) {
-            run(state, metric, kernel, dim, residency);
-          });
+          benchmark::RegisterBenchmark(
+              name, [=](benchmark::State& state) { run(state, metric, kernel, dim, residency); });
         }
       }
     }
@@ -274,12 +271,12 @@ int main(int argc, char** argv) {
   register_accumulator_sweep();
 
   benchmark::AddCustomContext("detected_kernel",
-                              std::string(lodestone::kernel_name(
-                                  lodestone::detected_kernel())));
+                              std::string(lodestone::kernel_name(lodestone::detected_kernel())));
   benchmark::AddCustomContext("l1_fixture", "store ~16 KiB, compute-bound");
   benchmark::AddCustomContext("stream_fixture", "store 256 MiB (16x L3), memory-bound");
   benchmark::AddCustomContext("dim960_data", "synthetic — GIST dimension, not GIST data");
-  benchmark::AddCustomContext("bytes_reported", "dim floats per distance, excluding stride padding");
+  benchmark::AddCustomContext("bytes_reported",
+                              "dim floats per distance, excluding stride padding");
 
   benchmark::Initialize(&argc, argv);
   if (benchmark::ReportUnrecognizedArguments(argc, argv)) {
