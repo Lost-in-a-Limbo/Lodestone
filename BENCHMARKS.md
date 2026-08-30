@@ -385,12 +385,139 @@ Three consequences, all applied above:
 
 ## Phase 3 — HNSW
 
-| ef | recall@10 | QPS | p50 | p95 | p99 | Machine |
-|---|---|---|---|---|---|---|
-| — | — | — | — | — | — | — |
+Machine M1, `release` preset, AVX2 kernel selected automatically. Regenerate:
 
-Report the tie-aware recall figure, or inherit a 0.06% penalty on SIFT1M that
-has nothing to do with the index (`DECISIONS.md` D17).
+```bash
+./build/release/tools/hnsw_bench data/sift/sift_base.fvecs \
+    data/sift/sift_query.fvecs data/sift/sift_groundtruth.ivecs
+```
+
+Recall is reported **tie-aware** (D17). Strict id-set recall is printed
+alongside and differs by <0.001 here — at 96% recall the genuine misses swamp
+the duplicate-vector ties that dominated the exact-search figure.
+
+### Build, SIFT1M
+
+`M = 16`, `M_max0 = 32`, `ef_construction = 200`, seed 100, single-threaded.
+
+| Metric | Value | Exit criterion |
+|---|---|---|
+| Build time | **403.4 s** (6.7 min), 2,479 vectors/s | under 20 min ✅ |
+| Graph memory | **135.9 MiB** | — |
+| Peak RSS | 660.5 MiB (store 488.3 MiB, so ~172 MiB above it) | — |
+| Max level | 5 | — |
+| Graph bytes per vector | ~142 | — |
+
+The graph costs 28% of what the vectors cost. At `M_max0 = 32` a layer-0
+neighbour list is 33 × 4 = 132 bytes; everything else — upper layers, the level
+array, the visited set — is the remaining ~10.
+
+### The recall/QPS curve, SIFT1M, k = 10
+
+| ef | recall@10 | QPS | nodes visited | % of corpus |
+|---|---|---|---|---|
+| 8 | *skipped* | — | — | ef < k cannot return k results |
+| 16 | 0.8023 | 17,831 | 484 | 0.048% |
+| 32 | 0.9045 | 10,822 | 743 | 0.074% |
+| **64** | **0.9644** | **6,046** | 1,230 | 0.123% |
+| 128 | 0.9900 | 3,444 | 2,128 | 0.213% |
+| 256 | 0.9980 | 1,855 | 3,728 | 0.373% |
+
+**Exit criterion met: recall@10 ≥ 0.95 at ef = 64.**
+
+`ef = 8` is skipped rather than clamped. PRD section 6 suggests sweeping from 8,
+but ef bounds the layer-0 candidate list, so ef < k cannot return k results. A
+row labelled `ef=8` that had quietly run at ef=10 would be a lie in a table.
+
+### Against brute force — what the index is actually worth
+
+Same machine, same kernel, same data, same tie-aware metric:
+
+| | recall@10 | QPS | nodes visited/query |
+|---|---|---|---|
+| Brute force (Phase 2) | 1.000000 | 32.3 | 1,000,000 |
+| HNSW, ef = 64 | 0.9644 | **6,046** | **1,230** |
+| HNSW, ef = 128 | 0.9900 | 3,444 | 2,128 |
+
+**187× the throughput at 96.4% recall; 107× at 99.0%.**
+
+The mechanism is visible in the last column: the graph answers a query by
+looking at **1,230 of a million vectors, 0.12% of the corpus.** Phase 2 ended
+with the observation that brute force was pinned at 30.9 ms because it streams
+488 MiB per query and no kernel work could change that. This is the other way
+out — not moving the data faster, but not touching it at all.
+
+### What the neighbour heuristic is worth
+
+The single most-asked question about an HNSW implementation, measured rather
+than asserted. Both selection rules stay in the code so this can be rerun
+(`--selection=both`).
+
+**SIFT1M, 2,000 queries for the simple run, 10,000 for the heuristic:**
+
+| ef | heuristic (Alg 4) | simple (Alg 3) | gap |
+|---|---|---|---|
+| 16 | 0.8023 | 0.7171 | +0.085 |
+| 64 | **0.9644** | 0.9135 | +0.051 |
+| 256 | 0.9980 | 0.9825 | +0.016 |
+
+The gap narrows as ef grows, which is the honest way to read it: **the heuristic
+does not find answers simple selection cannot — it finds them with less search.**
+Stated at matched recall, the convention that actually matters: heuristic hits
+0.964 at ef = 64 and 6,046 QPS; simple needs roughly ef ≈ 120 for the same
+recall, around 3,500 QPS. So the heuristic is worth about **1.7× throughput at
+matched recall**, and it costs nothing at build time (369 s versus 403 s, the
+simple rule being marginally cheaper to evaluate).
+
+Build time and graph size are identical to three significant figures — 135.9 MiB
+either way — so this is purely a question of *which* edges get kept.
+
+### A claim I made from SIFT10K that SIFT1M did not support
+
+Worth recording, because the mistake is the interesting part.
+
+On SIFT10K the same comparison looked far more dramatic. Simple selection
+appeared to **plateau**:
+
+| ef | heuristic | simple |
+|---|---|---|
+| 16 | 0.9710 | 0.7030 |
+| 64 | 1.0000 | 0.7470 |
+| 256 | 1.0000 | **0.7500** |
+
+Sixteen times the search effort buying 0.007 recall reads unmistakably as
+*unreachable* regions rather than merely unexplored ones — and I wrote that
+interpretation down.
+
+**SIFT1M does not reproduce it.** Simple selection keeps improving all the way
+to 0.9825 at ef = 256; there is no plateau, only a lag.
+
+The likely cause is the measurement, not the algorithm: **SIFT10K ships only 100
+queries.** That is two orders of magnitude below this project's own stated
+minimum of 10,000 queries per measurement, and a handful of queries landing in a
+badly-connected pocket is enough to pin the mean near 0.75 and make it look like
+a ceiling. The 1M figure, over 2,000–10,000 queries, is the one to trust.
+
+The rule the project already had would have caught this, and it is now applied
+to SIFT10K rows too: **anything measured on 100 queries is indicative, never a
+finding.**
+
+### An unexpected result: the hierarchy does almost nothing at 20k
+
+Recorded because it was measured and it contradicts the folk explanation of why
+HNSW is fast.
+
+Removing the greedy descent entirely — searching layer 0 directly from the entry
+point — changed nothing measurable on a 20,000-vector corpus. Mean nodes visited
+went from 478 to **445**, i.e. slightly *fewer*, and every recall test still
+passed.
+
+At that size layer 0 is well enough connected that greedy search converges from
+almost anywhere, and the descent is pure overhead. The hierarchy earns its keep
+at 1M — `max_level` reaches 5, and the descent is what avoids a long walk across
+the graph — but it is not the reason a small index is fast, and this is why no
+test asserts a visit-count bound tight enough to catch a missing descent. Stated
+rather than papered over, because a test that cannot fail is worse than no test.
 
 ## Phase 4 — versus hnswlib
 

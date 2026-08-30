@@ -54,8 +54,8 @@ Everything is written from scratch. `hnswlib` and `faiss` appear only in `bench/
 | 0 | Scaffolding, CMake, CI | ✅ done |
 | 1 | `.fvecs` parsing, aligned storage, brute-force ground truth | ✅ done |
 | 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | ✅ done |
-| 3 | HNSW construction and search | 🔨 in progress |
-| 4 | Benchmark harness, comparison against `hnswlib` | — |
+| 3 | HNSW construction and search | ✅ done |
+| 4 | Benchmark harness, comparison against `hnswlib` | 🔨 in progress |
 | 5 | Product quantization | — |
 | 6 | **Filtered search — reproducing the collapse** | — |
 | 7 | An attempt at a fix | — |
@@ -67,15 +67,28 @@ Phase 6 is the point of the project. Everything before it is the measurement rig
 
 ## Benchmarks
 
-The recall@10-vs-QPS curves against `hnswlib` and `faiss` land with Phase 4 — **including the cases where Lodestone loses and why.** What exists so far is the ground truth everything else will be measured against.
+The comparison against `hnswlib` and `faiss` lands with Phase 4 — **including the cases where Lodestone loses and why.** Until then these are our own numbers against our own exact baseline, with machine specs and regeneration commands in [`BENCHMARKS.md`](BENCHMARKS.md).
 
-Exact brute force on SIFT1M, single-threaded, machine specs and regeneration commands in [`BENCHMARKS.md`](BENCHMARKS.md):
+**HNSW on SIFT1M**, single-threaded, k = 10:
+
+| ef | recall@10 | QPS | vectors examined |
+|---|---|---|---|
+| 32 | 0.9045 | 10,822 | 743 |
+| **64** | **0.9644** | **6,046** | 1,230 |
+| 128 | 0.9900 | 3,444 | 2,128 |
+| 256 | 0.9980 | 1,855 | 3,728 |
+
+Build 403 s single-threaded, graph 135.9 MiB. Against exact brute force on the
+same machine — 32.3 QPS at recall 1.000000 — that is **187× the throughput at
+96.4% recall**, by looking at 1,230 of a million vectors instead of all of them.
+
+The exact baseline underneath it:
 
 | Metric | Value |
 |---|---|
 | Load, 1M × 128 vectors | 0.33 s |
 | Peak RSS | 501.6 MiB |
-| Brute-force throughput | **32.32 QPS** (median of 3) — 30.9 ms/query |
+| Brute-force throughput | 32.32 QPS — 30.9 ms/query, memory-bandwidth-bound |
 | Distance kernel | AVX2, **11.1×** hand-written scalar |
 | **recall@10** | **1.000000** |
 

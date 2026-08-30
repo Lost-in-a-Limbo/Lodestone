@@ -508,3 +508,111 @@ at `stream` dim 960, wildly out of line with the other three shapes. Repeating
 the pair twice gave 1.3% both times. Publishing the first run would have
 produced a confident and completely wrong finding — the same mistake made one
 task earlier with the "0.06% is a wall" claim (see `BENCHMARKS.md`).
+
+
+---
+
+## D24 — The visited set is epoch-stamped, not cleared
+
+**Phase 3.** `src/hnsw.cpp`
+
+`SEARCH-LAYER` asks "have I seen this node?" thousands of times per query. A
+`std::vector<bool>` cleared per query is O(N) per query — at a million nodes,
+that clearing alone would cost more than the search it serves, and the whole
+point of the index is that a query touches ~1,200 nodes.
+
+Epoch stamping: a `vector<uint32_t>` of marks plus a counter, so the reset is
+`++epoch` and the test is one compare. 4 MB at 1M nodes.
+
+The wraparound is handled explicitly. After 2³² queries the counter returns to
+zero and every stale mark would read as "already visited", so searches would
+silently return almost nothing. One O(N) clear every four billion queries costs
+nothing; the alternative is a bug that appears only after days of load.
+
+---
+
+## D25 — Non-reciprocal edges are correct, and the test asserts a rate
+
+**Phase 3.** `tests/test_hnsw.cpp`
+
+Insertion links both directions, so the first test written asserted that *every*
+edge is reciprocal. It failed — and the test was wrong, not the code.
+
+Algorithm 1 adds the back-edge and then, if the neighbour is over its degree
+budget, **re-selects its entire edge set**. That re-selection can legitimately
+drop the brand-new back-edge, and the paper permits it. Truncating instead of
+re-selecting would be the real bug: a node's edges would drift towards whichever
+neighbours happened to arrive first, which is exactly the clustering the
+heuristic exists to prevent.
+
+So the assertion is on the *rate*, currently >90%. A rate near 1.0 with a few
+exceptions is healthy pruning; a rate near 0.5 would mean back-edges were never
+added at all — a graph that searches perfectly from one side and returns
+nonsense from the other.
+
+---
+
+## D26 — The neighbour heuristic is worth 0.25 recall, and both rules stay in the code
+
+**Phase 3.** `src/hnsw.cpp`. Numbers in `BENCHMARKS.md`.
+
+Algorithm 3 (keep the M nearest) and Algorithm 4 (the diversity heuristic) are
+both implemented, selectable at construction. Keeping the loser is deliberate:
+"the heuristic matters for recall" is the most-asked question about an HNSW
+implementation, and having the number beats having the claim.
+
+On SIFT1M the heuristic reaches 0.9644 at ef=64 where simple reaches 0.9135, and
+the gap narrows as ef grows (+0.085 at ef=16, +0.016 at ef=256). Read at matched
+recall — the convention that matters — the heuristic is worth roughly **1.7x
+throughput**: it reaches 0.964 at ef=64 and 6,046 QPS where simple needs ef ≈ 120
+and about 3,500 QPS. Build time and graph size are identical, so this is purely
+about *which* edges are kept.
+
+Keeping the M nearest produces mutually redundant edges all pointing into the
+same small region; the heuristic admits a candidate only when it is closer to
+the query than to anything already selected, so each edge must open a direction
+not already covered.
+
+**A correction worth keeping.** On SIFT10K the same comparison showed simple
+selection apparently *plateauing* at 0.75 regardless of ef, which reads as
+unreachable regions rather than unexplored ones — and that interpretation was
+written down before SIFT1M was run. SIFT1M does not reproduce it: simple keeps
+improving to 0.9825. The likely cause is that **SIFT10K ships only 100 queries**,
+two orders of magnitude below this project's own stated minimum, so a few
+badly-placed queries can pin the mean and look like a ceiling. Every SIFT10K row
+is now labelled indicative rather than a finding.
+
+---
+
+## D27 — The hierarchy does almost nothing at 20k, and no test pretends otherwise
+
+**Phase 3.** Measured, and it contradicts the usual explanation of why HNSW is
+fast.
+
+Deleting the greedy descent — searching layer 0 directly from the entry point —
+changed nothing measurable on 20,000 vectors. Mean nodes visited went from 478
+to **445**, slightly *fewer*, and every test still passed.
+
+At that size layer 0 is connected enough that greedy search converges from
+almost anywhere, so the descent is pure overhead. It earns its keep at 1M, where
+`max_level` reaches 5 and the descent avoids a long walk across the graph.
+
+The consequence for the test suite is stated rather than hidden: **no test
+asserts a visit-count bound tight enough to catch a missing descent**, because
+at any size the sanitisers can afford, no such bound discriminates. A test that
+cannot fail is worse than no test, so the gap is recorded here instead.
+
+---
+
+## D28 — `ef < k` is rejected, and the sweep skips those rows
+
+**Phase 3.** `src/hnsw.cpp`, `tools/hnsw_bench.cpp`
+
+`ef` bounds the layer-0 candidate list, so `ef < k` cannot return k results.
+`search()` returns `invalid_argument` rather than a short list, because a caller
+that divided a short list by k would get a recall figure that looks fine.
+
+PRD section 6 suggests sweeping `ef ∈ {8, 16, …}` while the headline metric is
+recall@10, so `ef = 8` is unservable. The sweep prints it as skipped rather than
+clamping to 10 — a row labelled `ef=8` that had actually run at ef=10 would be a
+lie in a published table.

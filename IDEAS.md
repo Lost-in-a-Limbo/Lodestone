@@ -69,6 +69,25 @@ dim 128. But every measurement used a batch of 256, matching brute force.
 `SEARCH-LAYER` will call with M ≈ 16–32. Whether the overlap still materialises
 at that size is unmeasured and directly affects Phase 3's inner loop.
 
+### Profile the HNSW build
+**Raised:** Phase 3. **Needed by:** nobody yet, which is why it is here.
+
+Build is 2,479 vectors/s single-threaded — 403 s for SIFT1M, comfortably inside
+the 20-minute criterion, so there is no pressure to fix it. But it has never
+been profiled, and the two plausible costs are very different: the
+`ef_construction = 200` search per insert, or the heuristic's O(M²) distance
+checks during selection. Worth knowing before Phase 6, which rebuilds the index
+many times across the selectivity sweep.
+
+### A scratch parameter for concurrent search
+**Raised:** Phase 3. **Needed by:** Phase 4 only if it threads.
+
+`HnswIndex::search()` is `const` but not thread-safe: the visited set and heaps
+live in the index as mutable members. The project methodology is single-threaded
+queries, so this is currently correct and cheap. If Phase 4 ever wants parallel
+query throughput, the fix is a caller-owned `SearchScratch` parameter rather
+than one index per thread.
+
 ### DONE — 64-byte-align the prepared query buffer
 **Raised:** Phase 1 task 3. **Answered:** Phase 2 task 4.
 

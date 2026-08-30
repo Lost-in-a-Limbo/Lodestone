@@ -3,43 +3,39 @@
 > Update this the moment a phase closes. It is the first thing read at the
 > start of every session — it is how both you and Claude Code know where you are.
 
-## → PHASE 3: HNSW
+## → PHASE 4: Benchmark harness
 
-**Goal:** the index itself. The largest single phase.
+**Goal:** the measurement rig everything downstream depends on. Build it
+properly now — Phases 5, 6 and 7 all report through it.
 
-**Exit criteria (PRD §6 Phase 3)**
-- [ ] Layer assignment with exponentially decaying probability
-- [ ] Greedy search per layer, descending to layer 0
-- [ ] `SEARCH-LAYER` with a candidate heap and an `ef`-bounded result list
-- [ ] The neighbour selection *heuristic* (Algorithm 4), not just nearest-M —
-      it matters a lot for recall
-- [ ] Bidirectional insertion with pruning past `M_max`
-- [ ] Serialisation that round-trips identically
-- [ ] Recall@10 ≥ 0.95 on SIFT1M at some `ef`
-- [ ] QPS within 5× of `hnswlib` at matched recall
-- [ ] Build under 20 minutes single-threaded on 1M vectors
+**Exit criteria (PRD §6 Phase 4)**
+- [ ] `./bench --all` produces `bench/results/results.json` with no manual steps
+- [ ] recall@1, @10, @100; QPS; p50/p95/p99 latency; index memory; build time
+- [ ] Machine spec captured automatically — CPU, cores, RAM, compiler, flags
+- [ ] Warmup discarded, minimum 3 runs, median reported
+- [ ] A comparison harness running `hnswlib` on identical data
+- [ ] Numbers reproduce within 5% across three runs
+- [ ] `BENCHMARKS.md` has our curve next to hnswlib's
 
-**Reference:** Malkov & Yashunin, arXiv 1603.09320, Algorithms 1–5. One
-algorithm per task, each with tests.
+**Resume bullet unlocks here.** This is the phase that makes the project
+citable.
 
 **Blocked on:** nothing.
 
-**What Phase 2 leaves you:**
+**What Phase 3 leaves you:**
 
-1. `make_distance_computer(metric, store)` returns AVX2 automatically and the
-   graph never names a kernel. Hold a `DistanceComputer&` and nothing else — if
-   `l2_distance(` appears in `hnsw.cpp`, the rule has broken.
-2. **Use `distances_to()`, not `distance_to()` in a loop.** A node's neighbour
-   list is naturally a batch, and the batch is where the speed is: independent
-   distances overlap in the pipeline, which is worth more than extra
-   accumulators (`DECISIONS.md` D22).
-3. **Report the tie-aware recall figure.** SIFT1M has 14,538 duplicate vectors;
-   the strict id-set measure costs a free 0.06% that has nothing to do with your
-   index (`DECISIONS.md` D17).
-4. **The number to beat is 30.9 ms per query.** That is brute force with the
-   fastest kernel this machine can run, and it is pure memory bandwidth — 488
-   MiB streamed per query. No kernel improves it. HNSW wins by not visiting a
-   million vectors, and that is the whole argument for the phase.
+1. `tools/hnsw_bench` already sweeps ef and prints recall/QPS/visited. Phase 4's
+   job is to make it emit JSON, add latency percentiles and recall@1/@100, and
+   put `hnswlib` beside it — not to rewrite the sweep.
+2. **Report tie-aware recall** (D17). Every Phase 3 number does.
+3. **Three measurement traps this project has already fallen into**, all
+   recorded: absolute timings drift ~20% with thermals so ratios are the stable
+   quantity (D-note in `BENCHMARKS.md`); a single run's agreement is not
+   evidence; and **anything measured on SIFT10K's 100 queries is indicative, not
+   a finding** — that one produced a wrong conclusion in Phase 3 that SIFT1M
+   overturned.
+4. The `hnswlib` comparison is the one number this phase cannot fudge. Match on
+   recall, not on ef — the two libraries will not agree on what a given ef buys.
 
 ---
 
@@ -50,14 +46,38 @@ algorithm per task, each with tests.
 | 0 | Bootstrap | **closed** | 2026-08-23 | 8/8 tests, 3 presets green |
 | 1 | Data + brute force | **closed** | 2026-08-24 | recall@10 = 1.000000 tie-aware |
 | 2 | SIMD kernels | **closed** | 2026-08-27 | AVX2 11.1× scalar; 32.3 QPS brute force |
-| 3 | HNSW | **in progress** | — | recall@10, QPS |
-| 4 | Benchmark harness | not started | — | full curve vs hnswlib |
+| 3 | HNSW | **closed** | 2026-08-27 | recall@10 0.9644 @ 6,046 QPS |
+| 4 | Benchmark harness | **in progress** | — | full curve vs hnswlib |
 | 5 | Product quantization | not started | — | bytes/vector, recall loss |
 | 6 | **Filtered search** | not started | — | **collapse curve** |
 | 7 | The attempt | not started | — | delta vs baselines |
 | 8 | Showcase | not started | — | deployed URL |
 
 **Resume-ready after Phase 4. Differentiating after Phase 6.**
+
+---
+
+## Phase 3 exit criteria — all met
+
+- [x] Layer assignment with exponentially decaying probability (`mL = 1/ln M`)
+- [x] Greedy descent per layer down to layer 0
+- [x] `SEARCH-LAYER` with a candidate heap and an `ef`-bounded result list
+- [x] The neighbour selection **heuristic** (Algorithm 4), *and* Algorithm 3
+      kept alongside so the gap could be measured: **1.7× throughput at matched
+      recall**
+- [x] Bidirectional insertion with re-selection past `M_max`
+- [x] Serialisation round-trips **bit-identically** — same edges, same answers
+- [x] **Recall@10 ≥ 0.95 on SIFT1M: 0.9644 at ef = 64**
+- [x] Build under 20 minutes single-threaded: **403 s (6.7 min)**
+- [ ] QPS within 5× of `hnswlib` at matched recall — **deferred to Phase 4**,
+      which is where the PRD puts the comparison harness. Our own curve is
+      recorded; the comparison is not yet run, and it is the number this project
+      cannot fudge.
+
+**187× brute force at 96.4% recall** — 6,046 QPS against 32.3, by visiting 1,230
+of a million vectors instead of all of them.
+
+87 tests green on `debug`, `asan` and `release`.
 
 ---
 
@@ -120,6 +140,11 @@ compile error and proves nothing.
                      AVX2 kernels, runtime dispatch, benchmark rig, accumulator
                      experiment; brute force 11.58 -> 32.32 QPS with recall
                      bit-identical; 71 tests; Phase 2 closed
+2026-08-27  Phase 3  HNSW Algorithms 1-5, serialisation, ef sweep; SIFT1M
+                     recall@10 0.9644 @ ef=64, 6046 QPS, build 403 s;
+                     found+fixed a duplicate-in-results bug; corrected a
+                     plateau claim made from 100 queries; 87 tests;
+                     Phase 3 closed
 ```
 
 ---
@@ -130,17 +155,19 @@ Full detail, methodology and regeneration commands in `BENCHMARKS.md`.
 
 | Metric | Value | Machine | Date |
 |---|---|---|---|
-| Load, 1M × 128 | 0.33–1.01 s (page-cache dependent) | M1 | 2026-08-27 |
-| Peak RSS, SIFT1M | 501.6 MiB | M1 | 2026-08-27 |
-| Brute force, scalar | 11.58 QPS, k=10 | M1 | 2026-08-24 |
-| **Brute force, AVX2** | **32.32 QPS**, k=10 (median of 3, 4.6% spread) | M1 | 2026-08-27 |
-| — per query | 30.9 ms, 15.4 GiB/s — bandwidth-bound | M1 | 2026-08-27 |
-| recall@10, tie-aware | **1.000000** (identical under every kernel) | M1 | 2026-08-27 |
-| recall@10, strict id-set | 0.999440 (identical under every kernel) | M1 | 2026-08-27 |
-| AVX2 vs scalar, compute-bound | **11.11×** (dim 128), 16.57× (dim 960) | M1 | 2026-08-27 |
-| AVX2 vs scalar, memory-bound | 3.51× (dim 128), 3.99× (dim 960) | M1 | 2026-08-27 |
+| **HNSW recall@10 / QPS** | **0.9644 @ 6,046 QPS** (ef=64) | M1 | 2026-08-27 |
+| — at ef=128 | 0.9900 @ 3,444 QPS | M1 | 2026-08-27 |
+| — at ef=256 | 0.9980 @ 1,855 QPS | M1 | 2026-08-27 |
+| HNSW build, 1M | 403 s, 2,479 vectors/s | M1 | 2026-08-27 |
+| HNSW graph memory | 135.9 MiB (~142 B/vector) | M1 | 2026-08-27 |
+| Nodes visited/query, ef=64 | 1,230 — **0.12% of the corpus** | M1 | 2026-08-27 |
+| Neighbour heuristic worth | ~1.7× throughput at matched recall | M1 | 2026-08-27 |
+| Brute force, AVX2 | 32.32 QPS, recall 1.000000 | M1 | 2026-08-27 |
+| Brute force, scalar | 11.58 QPS | M1 | 2026-08-24 |
+| AVX2 vs scalar, compute-bound | 11.11× (dim 128) | M1 | 2026-08-27 |
+| Load, 1M × 128 | 0.33–1.01 s | M1 | 2026-08-27 |
 | SIFT1M distinct vectors | 985,462 of 1,000,000 | — | 2026-08-24 |
-| Tests passing | 71/71 on 3 presets | M1 | 2026-08-27 |
+| Tests passing | 87/87 on 3 presets | M1 | 2026-08-27 |
 
 **Machine M1:** AMD Ryzen 5 7530U (Zen 3, 6C/12T, 4546 MHz max), 15 GiB RAM,
 GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
@@ -149,18 +176,28 @@ GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
 
 ## Open questions
 
-Things you don't understand yet and must resolve before the phase closes.
-An empty list at phase close means you either understood everything or weren't
-paying attention.
+- [ ] **How does the curve compare to `hnswlib` at matched recall?** The one
+      number this project cannot fudge, and the reason Phase 4 exists. Match on
+      recall, never on ef.
+- [ ] Build is 2,479 vectors/s single-threaded. Where does that go — the
+      `ef_construction = 200` search, or the heuristic's O(M²) distance checks
+      during selection? Never profiled.
+- [ ] Does `distances_to()` batching still pay at graph-sized batches (M ≈ 16–32
+      unvisited neighbours) as it did at 256? Carried from Phase 2, still open,
+      and now there is a real consumer to measure.
 
-- [ ] What `ef` actually buys on SIFT1M, and where the recall/QPS curve bends.
-- [ ] How much the neighbour-selection *heuristic* (Algorithm 4) is worth over
-      plain nearest-M. Implement both, measure the gap, keep the number — it is
-      the single most-asked question about an HNSW implementation.
-- [ ] Does batching neighbour distances through `distances_to()` actually help
-      inside `SEARCH-LAYER`, where the batch is M ≈ 16–32 rather than 256?
-      Phase 2 showed the batch is where the parallelism comes from, but never
-      measured it at graph-sized batches.
+### Resolved during Phase 3
+
+- [x] **What does ef buy, and where does the curve bend?** 0.80 at ef=16 to
+      0.998 at ef=256; the knee is around ef=64–128, where recall passes 0.96
+      while still visiting only 0.12–0.21% of the corpus.
+- [x] **How much is the neighbour heuristic worth?** ~1.7× throughput at matched
+      recall on SIFT1M. Not the dramatic collapse SIFT10K suggested — see the
+      correction in `BENCHMARKS.md`.
+- [x] **Does the hierarchy matter?** Almost not at all at 20k: deleting the
+      greedy descent changed visited counts from 478 to 445 and broke no test.
+      It earns its keep at 1M (`max_level` 5). Recorded in D27 along with the
+      consequence that no test can catch a missing descent at testable sizes.
 
 ### Resolved during Phase 2
 

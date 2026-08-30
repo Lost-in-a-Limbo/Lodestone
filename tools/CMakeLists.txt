@@ -1,6 +1,9 @@
 add_executable(sift_check sift_check.cpp)
 target_link_libraries(sift_check PRIVATE lodestone_core lodestone_options)
 
+add_executable(hnsw_bench hnsw_bench.cpp)
+target_link_libraries(hnsw_bench PRIVATE lodestone_core lodestone_options)
+
 if(LODESTONE_BUILD_TESTS)
   # SIFT10K only. SIFT1M is a manual release-preset run: scalar squared L2 over
   # 10,000 queries x 1,000,000 vectors x 128 dims is roughly 1.3e12
@@ -25,5 +28,16 @@ if(LODESTONE_BUILD_TESTS)
     set_tests_properties(sift10k_recall_is_exactly_one.${_kernel}
                          PROPERTIES SKIP_RETURN_CODE 4)
   endforeach()
+
+  # Phase 3's exit criterion, at a size the sanitisers can afford. SIFT1M is a
+  # manual release run - building a million-node graph is minutes, not a test.
+  add_test(
+    NAME sift10k_hnsw_recall_at_least_95
+    COMMAND
+      hnsw_bench "${_siftsmall}/siftsmall_base.fvecs"
+      "${_siftsmall}/siftsmall_query.fvecs"
+      "${_siftsmall}/siftsmall_groundtruth.ivecs" "--ef=16,64,128"
+      "--min-recall=0.95")
+  set_tests_properties(sift10k_hnsw_recall_at_least_95 PROPERTIES SKIP_RETURN_CODE 4)
 
 endif()
