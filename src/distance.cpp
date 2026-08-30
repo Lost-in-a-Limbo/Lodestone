@@ -37,11 +37,21 @@ bool cpu_supports_avx2() {
 } // namespace
 
 KernelKind detected_kernel() {
-  // Task 6 of the Phase 2 plan replaces this with __builtin_cpu_supports()
-  // checks for avx2 and fma. Until the SIMD kernels exist there is nothing to
-  // detect: reporting avx2 here while make_distance_computer() could only
-  // build scalar would make `automatic` return nullptr for every caller.
+  // The whole of Phase 2's runtime dispatch, in one function body, with no
+  // caller changes anywhere — which is what D15's seam was shaped to deliver.
+  if (cpu_supports_avx2()) {
+    return KernelKind::avx2;
+  }
+
+  // SSE needs no check. Every x86-64 CPU has SSE2 by definition of the
+  // architecture, and distance_sse.cpp uses nothing beyond it.
+#if defined(__x86_64__) || defined(_M_X64)
+  return KernelKind::sse;
+#else
+  // Not x86-64 at all: the SIMD files would not have compiled, so scalar is
+  // the only kernel that exists.
   return KernelKind::scalar;
+#endif
 }
 
 std::string_view kernel_name(KernelKind kind) {

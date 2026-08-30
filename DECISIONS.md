@@ -383,3 +383,128 @@ latency percentiles, no `hnswlib`. Phase 4 builds that. This tool exists to
 prove recall is 1.000 and to report three numbers while it is there. It prints a
 warning whenever it is run with fewer than 10,000 queries, so a SIFT10K QPS
 figure cannot be mistaken for a methodology-compliant measurement.
+
+---
+
+## D19 — Inner product returns the negated dot product
+
+**Phase 2.** `src/distance_scalar.cpp` and every kernel since.
+
+A larger inner product means *more* similar, which is backwards from L2. Every
+consumer — the bounded heap in `brute_force.cpp`, Phase 3's candidate queues —
+is written around "smaller is closer".
+
+**Rejected: a per-metric comparator in each consumer.** That hands all future
+graph code a chance to get the sign wrong, and the failure mode is a search that
+returns the *farthest* neighbours while looking perfectly healthy. One negation
+in one kernel cannot be got wrong twice.
+
+The visible consequence is that a vector's inner-product distance to itself is
+`-‖x‖²` rather than 0. A test asserts exactly that, so nobody "fixes" it and
+inverts the ordering on the way past.
+
+Adding the second metric also exposed a live bug in Phase 1's
+`diagnose_recall`: `worst_kept` was seeded at `0.0F` and taken as a running max,
+correct only while distances are non-negative. Confirmed live rather than
+theoretical — reverting the fix turns a test red.
+
+---
+
+## D20 — `KernelKind` is a request, not a type
+
+**Phase 2.** `include/lodestone/distance.hpp`, `src/distance.cpp`
+
+`make_distance_computer(metric, store, kind = automatic)`. The default argument
+means no existing caller changed when SSE and AVX2 landed — brute force and
+every Phase 1 test compile untouched, which is the property D15's seam was
+shaped to have. All of Phase 2's dispatch is the body of `detected_kernel()`.
+
+Explicit selection exists because the microbenchmark and the correctness tests
+must instantiate *each* kernel rather than whichever one the host prefers, and
+`DistanceComputer::kernel()` is how a test verifies the request was honoured.
+Graph code still names no class.
+
+**A request this CPU cannot serve returns nullptr, never a silent downgrade.** A
+benchmark that asked for AVX2 and quietly got scalar would report a speedup of
+1.0 and read as a slow kernel rather than a missing one. And the AVX2 path is
+gated on `__builtin_cpu_supports` for **both** `avx2` and `fma` — separate CPUID
+bits, and the kernel uses `_mm256_fmadd_ps`. Handing back a kernel the machine
+cannot execute is an illegal-instruction crash, not a wrong number.
+
+`__builtin_cpu_supports` rather than hand-rolled CPUID: its AVX path already
+accounts for the OS having enabled `XSAVE` state for the YMM registers, which a
+raw feature bit does not.
+
+---
+
+## D21 — Each SIMD file's ISA is pinned, in both directions
+
+**Phase 2.** `CMakeLists.txt`
+
+| File | Flags | Guard fires when |
+|---|---|---|
+| `distance_scalar.cpp` | `-fno-tree-vectorize -DLODESTONE_SCALAR_NOVEC` | define absent |
+| `distance_sse.cpp` | `-mno-avx -mno-avx2 -mno-fma` | `__AVX2__` **present** |
+| `distance_avx2.cpp` | `-mavx2 -mfma` | `__AVX2__` **absent** |
+| `distance.cpp` | none — plain `-march=native` | — |
+
+D5 established the scalar guard. Phase 2 adds the mirror: the SSE file `#error`s
+when AVX2 *is* enabled, because under `-march=native` the compiler would
+vectorise any stray scalar code in it to AVX2 and the "SSE" row would be partly
+an AVX2 row. Between the two guards, a mislabelled measurement cannot be
+produced quietly. Both verified by removing the flag and confirming the build
+fails.
+
+`distance.cpp` deliberately gets no SIMD flags at all: dispatch code has to run
+on a machine lacking the instruction set it is about to select.
+
+---
+
+## D22 — Four accumulators in the AVX2 kernel, chosen by measurement
+
+**Phase 2.** `src/distance_avx2.cpp`. Curve in `BENCHMARKS.md`.
+
+The textbook argument says a single accumulator makes every FMA wait on the
+previous one, so with 4 cycles of latency and 2/cycle of throughput you need 8
+independent chains to saturate.
+
+**Measured, the curve is nowhere near that shape, and the reason is
+instructive.** `distances_to()` computes independent distances back to back, so
+the tail of one overlaps the head of the next — the batch already supplies
+instruction-level parallelism that accumulators would otherwise have to.
+
+But only when the chain is short enough to fit the out-of-order window. At dim
+128 a distance is 16 dependent FMAs and extra accumulators buy ~1.4×; at dim 960
+it is 120 and they buy **~2.5×**, because 120 dependent FMAs cannot be hidden by
+the next distance.
+
+Four is the choice: best at dim 128, within 2.5% of best at dim 960, and eight
+costs register pressure for nothing.
+
+**This corrects an earlier hypothesis in this file.** The ~11–16% per-dimension
+penalty at dim 960 versus dim 128, which Phase 2 tasks 2 and 3 attributed to L1
+pressure, was **dependency-chain length**. With four accumulators dim 960
+becomes *cheaper* per dimension than dim 128, which the L1-pressure explanation
+cannot account for.
+
+---
+
+## D23 — The query buffer is 64-byte aligned for correctness, not speed
+
+**Phase 2.** `include/lodestone/detail/prepared_query.hpp`
+
+Extracted from the kernels so all three share one prepared-query buffer, but the
+substantive reason is alignment. `std::vector<float>` gets its storage from
+`operator new`, which guarantees 16 bytes on x86-64 — enough for SSE, and **not
+enough for AVX2**: a 32-byte `_mm256_load_ps` from a 16-byte-aligned base is
+undefined behaviour on half its offsets.
+
+**Measured: alignment is worth 0–2%, at or barely above noise.** So it stays for
+legality, not performance. This closes the open question Phase 1 logged in
+`IDEAS.md`.
+
+Worth recording *how* that number was reached. The first comparison showed 18%
+at `stream` dim 960, wildly out of line with the other three shapes. Repeating
+the pair twice gave 1.3% both times. Publishing the first run would have
+produced a confident and completely wrong finding — the same mistake made one
+task earlier with the "0.06% is a wall" claim (see `BENCHMARKS.md`).

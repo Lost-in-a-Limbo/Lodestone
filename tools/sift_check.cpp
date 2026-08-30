@@ -1,6 +1,7 @@
 // Phase 1's proof command.
 //
-//   sift_check <base.fvecs> <query.fvecs> <groundtruth.ivecs> [max_queries]
+//   sift_check [--kernel=NAME] <base.fvecs> <query.fvecs> <groundtruth.ivecs>
+//              [max_queries]
 //
 // Loads a corpus, brute-forces exact k-NN for every query, and checks the
 // result against the provided ground truth. Prints the three numbers Phase 1
@@ -125,12 +126,32 @@ bool parse_size(std::string_view text, std::size_t& out) {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: sift_check <base.fvecs> <query.fvecs> <groundtruth.ivecs> "
-               "[max_queries]\n\n"
+               "usage: sift_check [--kernel=auto|scalar|sse|avx2]\n"
+               "                  <base.fvecs> <query.fvecs> <groundtruth.ivecs>\n"
+               "                  [max_queries]\n\n"
                "Brute-forces exact k-NN (k=%zu) for every query and checks it\n"
                "against the provided ground truth. Exits non-zero unless mean\n"
-               "recall@%zu is exactly 1.000000.\n",
+               "tie-aware recall@%zu is exactly 1.000000.\n\n"
+               "--kernel exists so every distance kernel can be checked end to end.\n"
+               "Agreeing with scalar to 1e-5 is the weak test; producing the same\n"
+               "ranking is the one that decides recall.\n",
                k_neighbors, k_neighbors);
+}
+
+/// Parse --kernel=NAME. Returns false on an unknown name.
+bool parse_kernel(std::string_view text, lodestone::KernelKind& out) {
+  if (text == "auto" || text == "automatic") {
+    out = lodestone::KernelKind::automatic;
+  } else if (text == "scalar") {
+    out = lodestone::KernelKind::scalar;
+  } else if (text == "sse") {
+    out = lodestone::KernelKind::sse;
+  } else if (text == "avx2") {
+    out = lodestone::KernelKind::avx2;
+  } else {
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -141,17 +162,40 @@ int main(int argc, char** argv) {
   // which is indistinguishable from a hang.
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
-  if (argc < 4 || argc > 5) {
+  // Flags first, then positionals, so --kernel can appear anywhere before them.
+  auto requested_kernel = lodestone::KernelKind::automatic;
+  std::vector<std::string_view> positional;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    constexpr std::string_view kernel_flag = "--kernel=";
+    if (arg.starts_with(kernel_flag)) {
+      if (!parse_kernel(arg.substr(kernel_flag.size()), requested_kernel)) {
+        std::fprintf(stderr, "error: unknown kernel '%s'\n",
+                     std::string(arg.substr(kernel_flag.size())).c_str());
+        return exit_usage;
+      }
+    } else if (arg == "-h" || arg == "--help") {
+      usage();
+      return exit_ok;
+    } else if (arg.starts_with("--")) {
+      std::fprintf(stderr, "error: unknown option '%s'\n", std::string(arg).c_str());
+      return exit_usage;
+    } else {
+      positional.push_back(arg);
+    }
+  }
+
+  if (positional.size() < 3 || positional.size() > 4) {
     usage();
     return exit_usage;
   }
 
-  const std::filesystem::path base_path = argv[1];
-  const std::filesystem::path query_path = argv[2];
-  const std::filesystem::path truth_path = argv[3];
+  const std::filesystem::path base_path{positional[0]};
+  const std::filesystem::path query_path{positional[1]};
+  const std::filesystem::path truth_path{positional[2]};
 
   std::size_t query_limit = 0; // 0 means "all"
-  if (argc == 5 && !parse_size(argv[4], query_limit)) {
+  if (positional.size() == 4 && !parse_size(positional[3], query_limit)) {
     std::fprintf(stderr, "error: max_queries must be a positive integer\n");
     return exit_usage;
   }
@@ -241,11 +285,18 @@ int main(int argc, char** argv) {
     return exit_fail;
   }
 
-  auto computer = lodestone::make_distance_computer(Metric::l2, base);
+  auto computer = lodestone::make_distance_computer(Metric::l2, base, requested_kernel);
   if (computer == nullptr) {
-    std::fprintf(stderr, "error: could not build a distance computer\n");
-    return exit_fail;
+    // A kernel this CPU cannot run is a skip, not a failure: the ctest matrix
+    // asks for all three, and a machine without AVX2 should report "not
+    // applicable" rather than red.
+    std::fprintf(stderr, "skip: kernel '%s' is unavailable on this CPU\n",
+                 std::string(lodestone::kernel_name(requested_kernel)).c_str());
+    return exit_skip;
   }
+  std::printf("kernel: %s (requested %s)\n",
+              std::string(lodestone::kernel_name(computer->kernel())).c_str(),
+              std::string(lodestone::kernel_name(requested_kernel)).c_str());
 
   const std::size_t query_count =
       (query_limit == 0) ? queries.size() : std::min(query_limit, queries.size());

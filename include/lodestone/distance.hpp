@@ -167,6 +167,13 @@ namespace detail {
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_avx2_l2(const VectorStore& store);
 [[nodiscard]] std::unique_ptr<DistanceComputer> make_avx2_ip(const VectorStore& store);
 
+/// Task 5's experiment: an AVX2 kernel with an explicit accumulator count, so
+/// the benchmark can sweep it. Only 1, 2, 4 and 8 are instantiated; anything
+/// else returns nullptr. Not for production callers — `make_avx2_l2` already
+/// uses whichever count the measurement chose.
+[[nodiscard]] std::unique_ptr<DistanceComputer>
+make_avx2_experiment(Metric metric, const VectorStore& store, std::size_t accumulators);
+
 } // namespace detail
 
 } // namespace lodestone

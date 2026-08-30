@@ -29,6 +29,7 @@ Any departure from the rules above is listed here rather than left implicit.
 | Phase | Rule | Deviation and why |
 |---|---|---|
 | 1 | 10-second warmup discarded | **Skipped.** A brute-force query streams the entire 488 MiB corpus, so there is no working set for a warmup to warm. Three runs still taken, median reported. |
+| 2 | Three runs, median reported | **Kept, plus random interleaving.** The machine thermally throttles (86 °C idle, 92 °C loaded), so a fixed benchmark order penalises whatever runs last. Google Benchmark's `--benchmark_enable_random_interleaving` with 9 repetitions. Absolute ns figures still drift ~20% with machine state; **ratios reproduce within ~2%**, so ratios are what the headline numbers report. |
 
 ---
 
@@ -156,8 +157,9 @@ comparable across dimensions and against the Phase 1 brute-force figure.
 
 ### Scalar baseline, squared L2
 
-Median of 3. Stddev was 0.14–3.1 ns, i.e. **0.2–0.5%** — far inside the 5%
-reproducibility target.
+The first measurement taken this phase, on a cold machine, before any SIMD
+existed. Kept as the historical record; the comparison table below supersedes it
+and was taken under interleaving on a hot one. Do not mix rows between the two.
 
 | Fixture | dim | ns/distance | GiB/s | stddev |
 |---|---|---|---|---|
@@ -177,126 +179,107 @@ and that divergence is the measurement this phase exists to make.
 
 **dim 960 costs 0.675 ns per dimension against dim 128's 0.598** — 12.9% more,
 where per-distance loop overhead amortising over 960 elements instead of 128
-should have made it *cheaper*. Most likely L1 pressure: at dim 960 each distance
-streams a 3.84 KiB stored vector against a 3.84 KiB query, 7.7 KiB touched per
-distance versus 1 KiB at dim 128. Recorded as an observation, not a conclusion —
-worth confirming when the SIMD kernels give a second data point.
+should have made it *cheaper*. Recorded at the time as "most likely L1
+pressure", explicitly as an observation rather than a conclusion.
 
-### The prediction, on record before the SIMD kernels exist
+> **Superseded.** It was **dependency-chain length**, not L1 pressure — see the
+> accumulator experiment below. With four accumulators dim 960 becomes *cheaper*
+> per dimension than dim 128, which L1 pressure cannot explain.
 
-Now quantitative, from the numbers above rather than from Phase 1's estimate:
+### The prediction that was on record before any SIMD existed, and how it went
 
-- **`l1` should approach the full SIMD width**, so roughly 8× for AVX2 — down
-  from 76.5 ns toward ~10 ns at dim 128. Phase 2's ≥3× exit criterion is
-  measured here and should pass comfortably.
-- **`stream` cannot.** It already moves 5.98 GiB/s. Single-core streaming
-  bandwidth on a mobile Zen 3 part is roughly 15–20 GiB/s — well under DRAM peak,
-  because one core cannot keep enough misses outstanding. That floors `stream`
-  at 79.7 × 5.98/20 ≈ **24 ns** to 79.7 × 5.98/15 ≈ **32 ns**, a speedup of only
-  **2.5× to 3.3×**.
+Written here before the kernels were built, to be judged rather than quietly
+revised afterwards.
 
-If `l1` shows 6–8× and `stream` shows ~3×, that is not a contradiction. It is the
-memory wall, and it is the answer to "explain why the speedup isn't exactly 8×".
-**Falsify this rather than confirm it** — if `stream` beats 3.3×, the
-single-core bandwidth estimate was wrong and that is the more interesting result.
+| Predicted | Actual | Verdict |
+|---|---|---|
+| `l1` approaches full SIMD width, ~8×, toward ~10 ns at dim 128 | 11.1×, 8.49 ns | **Better than predicted** |
+| `stream` floors at 24–32 ns, a speedup of only 2.5–3.3× | 28.26 ns, 3.51× | **ns right, speedup slightly beaten** |
+| The `l1`/`stream` gap is the memory wall and answers "why not 8×" | 11.1× vs 3.51× | **Held** |
 
-### Methodology note: CPU frequency scaling
-
-Google Benchmark warns that CPU scaling is enabled. It is: the governor is
-`powersave` under `amd-pstate-epp`, and pinning it needs root this session does
-not have. Reported rather than quietly ignored — but the measured stddev of
-0.2–0.5% across three runs says it is not materially affecting these numbers.
+The shape of the argument survived; two of its numbers did not, and a later
+claim about the bandwidth ceiling was wrong outright — see below.
 
 ### Kernel comparison, squared L2
 
-All figures from a **single invocation** so the comparison is fair, median of 3.
-AVX2 is single-accumulator; task 5 varies that.
+**Ratios, not absolutes, are the trustworthy quantity on this machine.** See the
+thermal note below. Measured with Google Benchmark's random interleaving,
+9 repetitions, so thermal drift cannot map onto benchmark order.
 
-| Kernel | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
+| ns/distance | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
 |---|---|---|---|---|
-| scalar | 77.44 ns | 658.96 ns | 82.96 ns | 671.40 ns |
-| sse | 16.88 ns | 163.48 ns | 28.91 ns | 229.98 ns |
-| avx2 | **8.96 ns** | **85.81 ns** | **23.82 ns** | **170.15 ns** |
+| scalar | 94.33 | 777.40 | 99.30 | 836.07 |
+| sse | 20.24 | 193.26 | 35.23 | 275.02 |
+| avx2 (4 acc) | **8.49** | **46.91** | **28.26** | **209.31** |
+| stddev, worst | 6.6% | 5.0% | 6.8% | 5.5% |
 
 | Speedup vs scalar | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
 |---|---|---|---|---|
-| sse | 4.59× | 4.03× | 2.87× | 2.92× |
-| avx2 | **8.64×** | **7.68×** | **3.48×** | **3.95×** |
+| sse | 4.66× | 4.02× | 2.82× | 3.04× |
+| **avx2** | **11.11×** | **16.57×** | **3.51×** | **3.99×** |
 
-| Bandwidth | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
+**Phase 2's exit criterion is met with room to spare: AVX2 L2 is 11.1× scalar at
+dim 128 in the compute-bound fixture, against a requirement of ≥3×.** It clears
+3× in every fixture, including the memory-bound one.
+
+### Why the speedup exceeds the 8-wide register width
+
+11× and 16× from an 8-wide instruction set needs explaining as much as a
+shortfall would, and the answer is that **the baseline is latency-bound, not
+throughput-bound.**
+
+Naive scalar `sum += diff * diff` is a dependent float-add chain, one link per
+element, and Zen 3 float-add latency is 3 cycles. So the scalar kernel floors
+near 3 cycles per dimension no matter how many execution units sit idle. The
+AVX2 kernel advances 8 elements per link *and* runs 4 independent chains, so the
+comparison is 32 elements in flight against 1. Bounded by load ports and memory,
+that lands at 11–17×.
+
+Which means the headline number combines two distinct wins — vectorisation and
+breaking a dependency chain — and only the first is really "SIMD". A
+multi-accumulator *scalar* kernel would narrow the gap; we have not measured by
+how much, and that is logged in `IDEAS.md` as the honest caveat rather than
+quietly left out. Under any reading the ≥3× criterion is met.
+
+The real shortfall is `stream` at 3.5×, and its cause is memory bandwidth. The
+`l1`/`stream` gap — 11.1× against 3.5× — is precisely what the two fixtures were
+built to expose.
+
+### Task 5: the accumulator experiment
+
+ns/distance by accumulator count, AVX2, squared L2. Measured on a cooler thermal
+state than the table above, so compare *within* this table only.
+
+| Accumulators | `l1` dim 128 | `l1` dim 960 | `stream` dim 128 | `stream` dim 960 |
 |---|---|---|---|---|
-| scalar | 6.16 GiB/s | 5.43 GiB/s | 5.75 GiB/s | 5.33 GiB/s |
-| sse | 28.25 GiB/s | 21.88 GiB/s | 16.49 GiB/s | 15.55 GiB/s |
-| avx2 | 53.20 GiB/s | 41.68 GiB/s | **20.02 GiB/s** | **21.02 GiB/s** |
+| 1 | 9.61 | 91.08 | 25.71 | 192.47 |
+| 2 | 7.17 | 57.46 | 24.62 | 167.81 |
+| **4** | **6.93** | 37.57 | **23.33** | 165.54 |
+| 8 | 7.24 | **36.65** | 23.46 | 165.44 |
+| gain, 1→best | **1.39×** | **2.48×** | **1.10×** | **1.16×** |
 
-**Phase 2's exit criterion is met: AVX2 L2 is 8.64× scalar at dim 128 in the
-compute-bound fixture, against a requirement of ≥3×.** It clears 3× in every
-fixture, including the memory-bound one.
+**The textbook argument is wrong here, and the reason is the interesting part.**
+Theory says one accumulator serialises every FMA behind the previous one — 4
+cycles of latency against 2/cycle of throughput — so saturation needs 8 chains
+and the gain should be large. Measured, the gain is 1.39× at dim 128.
 
-### Two claims from the SSE row that AVX2 falsified
+The cause: `distances_to()` computes independent distances back to back, so the
+tail of one overlaps the head of the next. **Batching already supplies the
+instruction-level parallelism that accumulators would otherwise provide.**
 
-Recorded because they were written down as predictions, and the point of writing
-a prediction down is to be able to say plainly when it was wrong.
+But only while the chain fits the out-of-order window. At dim 128 a distance is
+16 dependent FMAs and the next distance can cover them; at dim 960 it is 120,
+which cannot be hidden, and accumulators then buy **2.48×**. That dimension
+dependence is the evidence for the explanation, not just a restatement of it.
 
-**Wrong: "the single-core bandwidth ceiling is 15.5 GiB/s, measured rather than
-estimated."** AVX2 streams at 20.02–21.02 GiB/s. 15.5 was not a ceiling, it was
-SSE's achievable rate.
+Four accumulators ship: best at dim 128, within 2.5% of best at dim 960, and
+eight costs register pressure for nothing.
 
-**Wrong, and worse: "two shapes landing within 0.06% is not a coincidence, it is
-a wall."** It was a coincidence. In the very next invocation the same two SSE
-numbers were 16.49 and 15.55 GiB/s — 6% apart. One run agreeing to 0.06% was
-read as structure when it was noise, on a machine already known to drift ~2%
-between runs. The lesson is the one this file already states elsewhere and I
-failed to apply: a single run is not a measurement.
-
-**Wrong: "AVX2 `stream` dim 128 stays within ~10% of SSE's 30.78 ns."** It is
-23.82 ns, 17.6% faster.
-
-**Right: "AVX2 `l1` dim 128 lands near 10 ns."** It is 8.96 ns.
-
-The corrected picture: SSE's streaming was *partly compute-limited*, not
-saturated. A wider kernel issues loads faster and keeps more misses outstanding,
-so it extracts more bandwidth. The true single-core ceiling is **at least
-21 GiB/s and still unmeasured** — nothing here has reached it.
-
-### Why the speedup is 8.64× and not 8×
-
-Slightly *over* the theoretical width, which needs explaining as much as a
-shortfall would.
-
-The scalar baseline is itself latency-bound. `sum += diff * diff` is a dependent
-float-add chain, one link per element, and float add latency on Zen 3 is
-3 cycles — so scalar is floored near 3 cycles per dimension regardless of how
-many execution units are idle. Measured: 2.7 cycles per dimension.
-
-AVX2 advances that same chain 8 elements at a time. So ~8× falls straight out of
-the dependency structure rather than out of throughput, and the extra ~8% comes
-from FMA fusing the multiply into the add.
-
-Which means the honest answer to "why isn't it exactly 8×" is not a shortfall at
-all in the `l1` fixture. **The shortfall is in `stream`, at 3.48×, and its cause
-is memory bandwidth** — the `l1`/`stream` gap is 8.64× versus 3.48×, and that
-divergence is precisely what the two fixtures were built to expose.
-
-### Task 5's premise is now in doubt, which is worth knowing before it runs
-
-The single-accumulator AVX2 kernel already reaches 8.64×, essentially the full
-8-wide width. There may be nothing left for an accumulator experiment to win.
-
-The evidence: at dim 128 AVX2 takes 8.96 ns, which is 40.7 cycles at the
-4.546 GHz peak clock, across 16 eight-lane iterations — **2.55 cycles per
-iteration**. One FMA per iteration, `vfmaddps` latency 4 cycles on Zen 3, single
-accumulator. A dependent chain should floor this at 4 cycles per iteration, or
-64 cycles per distance. It runs in 40.7.
-
-So the chain is definitively broken, and not by the kernel: `distances_to()`
-computes independent distances back to back, and the tail of one overlaps the
-head of the next. Batching supplies the instruction-level parallelism that
-multiple accumulators would otherwise have to.
-
-Revised prediction for task 5: **little or no gain at dim 128, contrary to the
-textbook FMA-latency argument.** If it does gain, the explanation above is wrong
-and that is the more interesting outcome.
+**This corrects an earlier claim in this file.** Tasks 2 and 3 recorded a ~11–16%
+per-dimension penalty at dim 960 versus dim 128 across scalar and SSE, and
+attributed it to L1 pressure. It was **dependency-chain length**: with four
+accumulators, dim 960 becomes *cheaper* per dimension than dim 128 (0.049 ns
+versus 0.054 ns), which L1 pressure cannot explain and chain length does.
 
 ### Answered: does the 64-byte-aligned query buffer buy anything?
 
@@ -309,36 +292,96 @@ The open question carried from Phase 1 (`IDEAS.md`). Measured by swapping
 | unaligned | 9.46 ns | 86.91 ns | 27.05 ns | 172.1 / 176.0 ns |
 | difference | 1.2% | 0.05% | 1.7% | 1.3% |
 
-**Answer: essentially nothing — 0–2%, at or barely above run-to-run noise.**
+**Answer: essentially nothing — 0–2%, at or barely above noise.** So the
+alignment stays for **correctness, not speed**: a 32-byte `_mm256_load_ps` from
+the 16-byte-aligned base that `std::vector<float>` guarantees is undefined
+behaviour on half its offsets. That is why `detail::PreparedQuery` exists.
 
-Worth recording how that number was arrived at. The first comparison showed
-`stream` dim 960 at 172.6 ns aligned versus 204.1 ns unaligned — an 18%
-difference, wildly out of line with the other three. Repeating the pair twice
-gave 1.3% both times; the 204.1 was an outlier. Publishing the first run would
-have produced a confident and completely wrong finding.
+Worth recording how that number was reached. The first comparison showed 18% at
+`stream` dim 960, wildly out of line with the other three. Repeating the pair
+twice gave 1.3% both times; the 18% was an outlier. Publishing the first run
+would have produced a confident and completely wrong finding.
 
-So the alignment stays, but **for correctness, not for speed**: a 32-byte
-`_mm256_load_ps` from the 16-byte-aligned base that `std::vector<float>`
-guarantees is undefined behaviour on half its offsets. That is the reason
-`detail::PreparedQuery` exists.
+### Two claims from task 3 that AVX2 falsified
 
-### The dim-960 penalty is not kernel-specific
+Recorded because they were written down as predictions, and the point of writing
+a prediction down is to be able to say plainly when it was wrong.
 
-Per dimension, dim 960 costs more than dim 128 under every kernel: 12.9% under
-scalar, 10.7% under SSE (earlier run), and 15.9% under AVX2. Three kernels with
-completely different instruction mixes showing the same order of penalty points
-at the memory hierarchy rather than the code — consistent with each dim-960
-distance touching a 3.84 KiB vector against a 3.84 KiB query, 7.7 KiB per
-distance against 1 KiB at dim 128.
+**Wrong: "the single-core bandwidth ceiling is 15.5 GiB/s, measured rather than
+estimated."** AVX2 streams above 20 GiB/s. 15.5 was SSE's achievable rate.
 
-### Methodology note: within-run versus between-run variance
+**Wrong, and worse: "two shapes landing within 0.06% is not a coincidence, it is
+a wall."** It was a coincidence — the next invocation had the same two numbers
+6% apart. One run's agreement was read as structure on a machine already
+documented here as drifting between runs.
 
-Stddev *within* one invocation is 0.2–0.5%. But the scalar figures moved about
-2% between two invocations minutes apart (76.52 → 74.80 ns at `l1` dim 128).
-Both are inside the project's 5% reproducibility target, and it is why every
-kernel comparison above comes from a **single invocation** — comparing a number
-from one run against a number from another would put a 2% drift into a
-measurement whose interesting effects are sometimes that small.
+**Wrong: "AVX2 `stream` dim 128 stays within ~10% of SSE."** It is 20–25% faster.
+
+**Right: "AVX2 `l1` dim 128 lands near 10 ns"**, and **right: "extra
+accumulators will gain little at dim 128"** — 1.39×, against a textbook
+expectation of several times that.
+
+The corrected picture: SSE's streaming was *partly compute-limited*, not
+saturated. A wider kernel issues loads faster and keeps more misses outstanding,
+so it extracts more bandwidth. The true single-core ceiling is **above 20 GiB/s
+and still unmeasured** — nothing built here has reached it.
+
+### End to end: SIFT1M brute force through the dispatched kernel
+
+The number that says what the kernel work is actually worth. Same tool, same
+data, same methodology as Phase 1 — only the kernel changed, and it changed by
+`detected_kernel()` picking AVX2 with no caller edited.
+
+| | scalar (Phase 1) | avx2 (Phase 2) | change |
+|---|---|---|---|
+| Throughput | 11.58 QPS | **32.32 QPS** | **2.79×** |
+| Runs | 11.38 / 11.58 / 11.58 | 31.84 / 32.32 / 33.31 | 4.6% spread |
+| Wall clock per pass | 863.8 s | **300–314 s** | |
+| Time per query | 86.4 ms | **30.9 ms** | |
+| Effective read bandwidth | 5.5 GiB/s | **15.4 GiB/s** | 2.8× |
+| recall@10 strict / tie-aware | 0.999440 / 1.000000 | **0.999440 / 1.000000** | **identical** |
+
+**The recall figures are bit-identical to the scalar run**, across 10,000 real
+queries against 1,000,000 vectors. That is the strongest correctness evidence in
+this phase — far stronger than any tolerance test, because it says the AVX2
+kernel selects the *same neighbours*, not merely similar distances.
+
+**2.79× end to end, against 11.1× in the compute-bound microbenchmark.** Not a
+disappointment — an explanation. A brute-force query reads all 488.3 MiB of the
+corpus, and 488.3 MiB at 15.4 GiB/s *is* 30.9 ms. The query time is now almost
+exactly the time it takes to stream the corpus out of DRAM once; the arithmetic
+has stopped mattering.
+
+It is also below the `stream` fixture's 3.51×, and the gap is Amdahl's law: the
+scan also maintains a bounded heap and generates ids, and neither of those got
+faster. Roughly 8% of the query is now non-kernel work.
+
+**This is the argument for Phase 3 stated in numbers.** No kernel can beat
+30.9 ms while every query touches all 1M vectors — the only way past it is to
+stop visiting all of them, which is what a navigable graph is for.
+
+### Methodology: this laptop thermally throttles, and it matters
+
+The single most important caveat on every absolute number in this section.
+
+`thermal_zone0` reads **86 °C after five minutes idle** and **92 °C** at the end
+of a benchmark run. Under sustained load the same measurement drifts a long way:
+`scalar/l2/l1/dim128` was 74.8 ns on a cold machine and 108.3 ns on a hot one, a
+45% spread on identical code.
+
+Three consequences, all applied above:
+
+1. **Ratios are stable even when absolutes are not.** AVX2-versus-scalar at
+   `l1` dim 128 measured 11.17× on a cold machine and 11.11× on a hot one — 0.5%
+   apart, across a thermal state that moved the absolutes by 22%. Every headline
+   figure in this section is therefore a ratio.
+2. **Random interleaving is required**, not optional. Without it, benchmarks run
+   in a fixed order and the machine heats monotonically, so later kernels are
+   systematically penalised — which would have made AVX2 look worse purely
+   because it is registered last.
+3. **Absolute ns/distance from this machine is not a portable number.** Phase 4's
+   harness must either pin the governor (needs root, unavailable in this
+   session), interleave as here, or report ratios only.
 
 ## Phase 3 — HNSW
 

@@ -3,40 +3,43 @@
 > Update this the moment a phase closes. It is the first thing read at the
 > start of every session — it is how both you and Claude Code know where you are.
 
-## → PHASE 2: SIMD distance kernels
+## → PHASE 3: HNSW
 
-**Goal:** your first real performance number, and the first place core CS pays
-off.
+**Goal:** the index itself. The largest single phase.
 
-**Exit criteria**
-- [ ] Scalar inner product to sit alongside the existing scalar L2
-- [ ] SSE and AVX2 variants of both, using intrinsics
-- [ ] Runtime dispatch on CPU feature detection, inside
-      `make_distance_computer()` — the body of that one function, with no caller
-      changes (`DECISIONS.md` D15)
-- [ ] Google Benchmark microbenchmarks comparing every variant at dim 128 and
-      dim 960
-- [ ] Tests asserting every SIMD variant agrees with scalar within 1e-4
-- [ ] AVX2 L2 is ≥3× scalar
-- [ ] You can explain why the speedup isn't exactly 8×
+**Exit criteria (PRD §6 Phase 3)**
+- [ ] Layer assignment with exponentially decaying probability
+- [ ] Greedy search per layer, descending to layer 0
+- [ ] `SEARCH-LAYER` with a candidate heap and an `ef`-bounded result list
+- [ ] The neighbour selection *heuristic* (Algorithm 4), not just nearest-M —
+      it matters a lot for recall
+- [ ] Bidirectional insertion with pruning past `M_max`
+- [ ] Serialisation that round-trips identically
+- [ ] Recall@10 ≥ 0.95 on SIFT1M at some `ef`
+- [ ] QPS within 5× of `hnswlib` at matched recall
+- [ ] Build under 20 minutes single-threaded on 1M vectors
 
-**No AVX-512.** M1 is Zen 3 and has none, and an untested SIMD kernel in a
-project whose value is measurement discipline is worse than an absent one. See
-`IDEAS.md`.
+**Reference:** Malkov & Yashunin, arXiv 1603.09320, Algorithms 1–5. One
+algorithm per task, each with tests.
 
-**Blocked on:** nothing. The seam is in place and already has a working
-consumer: `make_distance_computer()` returns the scalar kernel today, brute
-force drives it, and 56 tests hold the contract.
+**Blocked on:** nothing.
 
-**Two things Phase 1 leaves you:**
+**What Phase 2 leaves you:**
 
-1. The store zeroes its padding and `prepare_query()` zero-pads the query, so an
-   AVX2 kernel may run whole 8-wide iterations across the full stride with **no
-   scalar tail loop and no masked final load** (`DECISIONS.md` D13). This is the
-   single biggest simplification available to Phase 2 — use it.
-2. `-fno-tree-vectorize` is pinned to `distance_scalar.cpp` with a build guard,
-   so the baseline is honest. The measured ~3 cycles/dimension confirms it is
-   really applied, so the speedup you report will be real.
+1. `make_distance_computer(metric, store)` returns AVX2 automatically and the
+   graph never names a kernel. Hold a `DistanceComputer&` and nothing else — if
+   `l2_distance(` appears in `hnsw.cpp`, the rule has broken.
+2. **Use `distances_to()`, not `distance_to()` in a loop.** A node's neighbour
+   list is naturally a batch, and the batch is where the speed is: independent
+   distances overlap in the pipeline, which is worth more than extra
+   accumulators (`DECISIONS.md` D22).
+3. **Report the tie-aware recall figure.** SIFT1M has 14,538 duplicate vectors;
+   the strict id-set measure costs a free 0.06% that has nothing to do with your
+   index (`DECISIONS.md` D17).
+4. **The number to beat is 30.9 ms per query.** That is brute force with the
+   fastest kernel this machine can run, and it is pure memory bandwidth — 488
+   MiB streamed per query. No kernel improves it. HNSW wins by not visiting a
+   million vectors, and that is the whole argument for the phase.
 
 ---
 
@@ -46,8 +49,8 @@ force drives it, and 56 tests hold the contract.
 |---|---|---|---|---|
 | 0 | Bootstrap | **closed** | 2026-08-23 | 8/8 tests, 3 presets green |
 | 1 | Data + brute force | **closed** | 2026-08-24 | recall@10 = 1.000000 tie-aware |
-| 2 | SIMD kernels | **in progress** | — | ns/distance |
-| 3 | HNSW | not started | — | recall@10, QPS |
+| 2 | SIMD kernels | **closed** | 2026-08-27 | AVX2 11.1× scalar; 32.3 QPS brute force |
+| 3 | HNSW | **in progress** | — | recall@10, QPS |
 | 4 | Benchmark harness | not started | — | full curve vs hnswlib |
 | 5 | Product quantization | not started | — | bytes/vector, recall loss |
 | 6 | **Filtered search** | not started | — | **collapse curve** |
@@ -55,6 +58,30 @@ force drives it, and 56 tests hold the contract.
 | 8 | Showcase | not started | — | deployed URL |
 
 **Resume-ready after Phase 4. Differentiating after Phase 6.**
+
+---
+
+## Phase 2 exit criteria — all met
+
+- [x] Scalar inner product alongside scalar L2
+- [x] SSE and AVX2 variants of both, hand-written intrinsics
+- [x] Runtime dispatch on CPU feature detection, inside `detected_kernel()` —
+      the body of one function, no caller changed
+- [x] Google Benchmark microbenchmarks at dim 128 and dim 960
+- [x] Every SIMD variant agrees with scalar. **Read as relative (1e-5), not
+      absolute:** SIFT distances run to 5×10⁴ and reordering a float32 sum of
+      128 terms perturbs it by ~10⁻³ absolute on entirely correct code, so
+      absolute 1e-4 would fail correct kernels. And the *stronger* gate is
+      end-to-end — SIFT10K through each kernel must give tie-aware
+      recall@10 = 1.000000, which a tolerance test cannot catch.
+- [x] **AVX2 L2 is 11.1× scalar**, against a requirement of ≥3×
+- [x] Can explain why it isn't exactly 8× — it is *more* than 8× in the
+      compute-bound fixture, because the scalar baseline is latency-bound rather
+      than throughput-bound; and it is 3.5× in the memory-bound one, because of
+      bandwidth. Both written up in `BENCHMARKS.md`.
+
+71 tests green on `debug`, `asan` and `release`, including one end-to-end SIFT10K
+recall check per kernel.
 
 ---
 
@@ -89,7 +116,10 @@ compile error and proves nothing.
                      download script, sift_check; SIFT1M recall investigated
                      to duplicate vectors; 56 tests; Phase 1 closed
 2026-08-27  Phase 2  pushed Phase 0+1 to origin/main (13 commits, b20c81f..e73fcf4);
-                     Phase 0's last exit criterion ticked; Phase 2 planning
+                     Phase 0's last exit criterion ticked; scalar IP, SSE and
+                     AVX2 kernels, runtime dispatch, benchmark rig, accumulator
+                     experiment; brute force 11.58 -> 32.32 QPS with recall
+                     bit-identical; 71 tests; Phase 2 closed
 ```
 
 ---
@@ -100,13 +130,17 @@ Full detail, methodology and regeneration commands in `BENCHMARKS.md`.
 
 | Metric | Value | Machine | Date |
 |---|---|---|---|
-| Load, 1M × 128 | 0.33–0.84 s (page-cache dependent) | M1 | 2026-08-24 |
-| Peak RSS, SIFT1M | 501.6 MiB | M1 | 2026-08-24 |
-| Brute force | 11.58 QPS, k=10 (median of 3, 1.7% spread) | M1 | 2026-08-24 |
-| recall@10, tie-aware | **1.000000** | M1 | 2026-08-24 |
-| recall@10, strict id-set | 0.999440 | M1 | 2026-08-24 |
+| Load, 1M × 128 | 0.33–1.01 s (page-cache dependent) | M1 | 2026-08-27 |
+| Peak RSS, SIFT1M | 501.6 MiB | M1 | 2026-08-27 |
+| Brute force, scalar | 11.58 QPS, k=10 | M1 | 2026-08-24 |
+| **Brute force, AVX2** | **32.32 QPS**, k=10 (median of 3, 4.6% spread) | M1 | 2026-08-27 |
+| — per query | 30.9 ms, 15.4 GiB/s — bandwidth-bound | M1 | 2026-08-27 |
+| recall@10, tie-aware | **1.000000** (identical under every kernel) | M1 | 2026-08-27 |
+| recall@10, strict id-set | 0.999440 (identical under every kernel) | M1 | 2026-08-27 |
+| AVX2 vs scalar, compute-bound | **11.11×** (dim 128), 16.57× (dim 960) | M1 | 2026-08-27 |
+| AVX2 vs scalar, memory-bound | 3.51× (dim 128), 3.99× (dim 960) | M1 | 2026-08-27 |
 | SIFT1M distinct vectors | 985,462 of 1,000,000 | — | 2026-08-24 |
-| Tests passing | 56/56 on 3 presets | M1 | 2026-08-24 |
+| Tests passing | 71/71 on 3 presets | M1 | 2026-08-27 |
 
 **Machine M1:** AMD Ryzen 5 7530U (Zen 3, 6C/12T, 4546 MHz max), 15 GiB RAM,
 GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
@@ -119,43 +153,38 @@ Things you don't understand yet and must resolve before the phase closes.
 An empty list at phase close means you either understood everything or weren't
 paying attention.
 
-- [ ] **The prediction on record for Phase 2.** Brute force already moves
-      5.5 GiB/s streaming the corpus. Single-core streaming bandwidth on a
-      mobile Zen 3 part is roughly 15–20 GiB/s — far below DRAM peak, because a
-      single core cannot keep enough misses outstanding. So the *scan* speedup
-      should cap around **3×** however fast the kernel gets, while an L1-resident
-      *microbenchmark* should show close to full SIMD width. Measure both and
-      report them separately; the gap between them is the answer to Phase 2's
-      "explain why it isn't 8×". **Falsify this rather than assume it.**
-- [ ] Is the query buffer's lack of 64-byte alignment worth fixing? It is
-      L1-resident for a whole search while the store side streams, so it is
-      plausibly worth nothing. Measure before paying for an aligned allocator
-      (`IDEAS.md`).
-- [ ] Does the tail-free stride-wide loop actually help AVX2, or does the
-      compiler handle a `dim`-bounded loop just as well at dim 128 where
-      stride == dim? No test forces stride-wide looping — it is a permission the
-      store grants, not an obligation — so this is genuinely open.
+- [ ] What `ef` actually buys on SIFT1M, and where the recall/QPS curve bends.
+- [ ] How much the neighbour-selection *heuristic* (Algorithm 4) is worth over
+      plain nearest-M. Implement both, measure the gap, keep the number — it is
+      the single most-asked question about an HNSW implementation.
+- [ ] Does batching neighbour distances through `distances_to()` actually help
+      inside `SEARCH-LAYER`, where the batch is M ≈ 16–32 rather than 256?
+      Phase 2 showed the batch is where the parallelism comes from, but never
+      measured it at graph-sized batches.
 
-### Resolved during Phase 1
+### Resolved during Phase 2
 
-- [x] `cmake` / `ninja` not installed system-wide. Still true; the build is
-      driven with CLion's bundled copies at
-      `/snap/clion/current/bin/{cmake/linux/x64/bin,ninja/linux/x64}`. Works, but
-      the commands in `README.md` and `CLAUDE.md` do not run as written on a bare
-      shell. Fix with `sudo apt-get install -y cmake ninja-build`, or put those
-      two paths on `PATH`.
-- [x] Load time for 516 MB, and whether the simple record loop is good enough.
-      0.35 s warm. Two thirds of that is `reserve()`'s page-fault cost, which no
-      read strategy would change. Chunked reads not worth doing — `IDEAS.md`.
-- [x] Does the 488 MiB zero-fill cost meaningful time? It looks like 0.245 s of
-      0.358 s, but the *marginal* cost is 57 ms: without it the pages fault in
-      during the read anyway.
-- [x] Are there exact distance ties at rank 10 in SIFT1M? Yes — 56 of 10,000
-      queries, every one caused by a byte-identical duplicate vector.
-- [x] Would brute-force QPS be suspiciously fast, implying
-      `-fno-tree-vectorize` was not applied? No. 11.58 QPS is 1.48 × 10⁹
-      dimension-updates/s, roughly 3 cycles per dimension against a 4.5 GHz peak
-      clock — what un-vectorised scalar costs.
-- [x] Does stride padding matter at the dimensions in use? No — SIFT's 128 and
-      GIST's 960 are both multiples of 16 and pad to nothing, which is exactly
-      why tests run at dim 100 as well.
+- [x] **Does the streaming speedup cap near 3×?** Yes — 3.51× at dim 128, 3.99×
+      at dim 960, and 2.79× end to end on real SIFT1M. But the *reason* given
+      was wrong twice: "the ceiling is 15.5 GiB/s" and "the wall is hit at SSE"
+      were both over-read from single runs. AVX2 exceeds 20 GiB/s and the true
+      single-core ceiling is still unmeasured.
+- [x] **Is the AVX2 speedup larger at dim 960 than dim 128?** Yes, 16.6× versus
+      11.1× — the horizontal reduction is paid once per distance and amortises
+      over 120 iterations instead of 16.
+- [x] **Does the 64-byte-aligned query buffer buy anything?** No — 0–2%, at
+      noise. It stays because `_mm256_load_ps` from a 16-byte-aligned base is
+      UB, not because it is faster.
+- [x] **Does the tail-free stride-wide loop help?** It is a *permission*, not a
+      win: a `dim`-bounded loop computes the identical value because it still
+      covers `ceil(dim/lanes)*lanes` elements over zeroed padding. What it buys
+      is the absence of a masked-load tail, which is the buggiest part of a
+      hand-written SIMD kernel.
+- [x] **How much of the gap is load-port pressure?** With 4 accumulators at dim
+      960 the loop runs ~1.42 cycles per 8-lane iteration against a floor of 1
+      (2 loads per FMA, 2 load ports). Close enough that loads, not FLOPs, are
+      the binding constraint at the top end.
+- [x] **This laptop thermally throttles**, badly enough to move absolute
+      timings 20–45%. Ratios under random interleaving reproduce within ~2%.
+      Every Phase 2 headline is a ratio for that reason.
+

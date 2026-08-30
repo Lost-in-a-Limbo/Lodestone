@@ -43,8 +43,41 @@ Deliberately not built now. A filter strategy written before there is a graph
 to filter is a guess, and the signature is the only part that had to be got
 right early — which it was, by taking `count` rather than reaching into a store.
 
-### 64-byte-align the prepared query buffer
-**Raised:** Phase 1 task 3. **Decide by:** measurement in Phase 2.
+### A multi-accumulator *scalar* baseline
+**Raised:** Phase 2 task 5. **Why it matters:** honesty about the headline.
+
+The published "AVX2 is 11.1× scalar" compares tuned AVX2 against *naive* scalar,
+and the naive scalar kernel is latency-bound on a dependent float-add chain at
+~3 cycles per element. So the 11.1× combines two wins — vectorisation and
+breaking a dependency chain — and only the first is really SIMD.
+
+A scalar kernel with 4 independent accumulators would be meaningfully faster and
+would narrow the gap. We have not measured by how much, so the honest statement
+is that the SIMD-only contribution is somewhere below 11.1× and above the ≥3×
+the phase required.
+
+Not built because it is a benchmark artefact, not a kernel anyone would ship,
+and Phase 2's exit criterion is met under any reading. Worth an hour if the
+number is ever quoted outside this repo.
+
+### Measure `distances_to()` at graph-sized batches
+**Raised:** Phase 2 task 5. **Needed by:** Phase 3.
+
+Phase 2 established that batching independent distances is where the
+instruction-level parallelism comes from — it beats extra accumulators at
+dim 128. But every measurement used a batch of 256, matching brute force.
+`SEARCH-LAYER` will call with M ≈ 16–32. Whether the overlap still materialises
+at that size is unmeasured and directly affects Phase 3's inner loop.
+
+### DONE — 64-byte-align the prepared query buffer
+**Raised:** Phase 1 task 3. **Answered:** Phase 2 task 4.
+
+Measured at 0–2%, at or barely above noise. Kept anyway, because a 32-byte
+`_mm256_load_ps` from the 16-byte-aligned base `std::vector<float>` guarantees
+is undefined behaviour — correctness, not speed. See `DECISIONS.md` D23.
+
+<details>
+<summary>Original entry</summary>
 
 `ScalarL2Computer::query_` is a plain `std::vector<float>`, so it is 16-byte
 aligned at best. The stored vectors are 64-byte aligned and the query is not,
@@ -57,6 +90,7 @@ streams fresh cache lines on every distance. Unaligned loads on L1-resident
 data have been close to free on x86 since Nehalem. So this is plausibly worth
 nothing, and Phase 2 should *measure* it rather than pay for an aligned
 allocator on the strength of an argument.
+</details>
 
 ### Finish vendoring CPM
 **Raised:** Phase 0, see DECISIONS.md D6.

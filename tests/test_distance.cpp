@@ -529,6 +529,55 @@ TEST_CASE("detected_kernel resolves to something concrete", "[distance]") {
   CHECK(explicit_same->kernel() == detected_kernel());
 }
 
+TEST_CASE("dispatch picks the widest kernel the CPU can run", "[distance]") {
+  VectorStore store;
+  REQUIRE(store.reserve(4, 1) == Status::ok);
+
+  const KernelKind picked = detected_kernel();
+  CHECK(picked != KernelKind::automatic);
+
+  // Whatever detection picks must be the widest thing available. Silently
+  // selecting scalar on a machine with AVX2 would cost 10x and show up as
+  // nothing worse than a disappointing benchmark.
+  const bool avx2_available =
+      make_distance_computer(Metric::l2, store, KernelKind::avx2) != nullptr;
+  const bool sse_available =
+      make_distance_computer(Metric::l2, store, KernelKind::sse) != nullptr;
+
+  if (avx2_available) {
+    CHECK(picked == KernelKind::avx2);
+  } else if (sse_available) {
+    CHECK(picked == KernelKind::sse);
+  } else {
+    CHECK(picked == KernelKind::scalar);
+  }
+
+  // And `automatic` must actually deliver it.
+  auto computer = make_distance_computer(Metric::l2, store, KernelKind::automatic);
+  REQUIRE(computer != nullptr);
+  CHECK(computer->kernel() == picked);
+}
+
+TEST_CASE("dispatch never selects a kernel it cannot construct", "[distance]") {
+  // The failure this guards is not a wrong number, it is an
+  // illegal-instruction crash: a dispatch table that names a kernel the machine
+  // cannot execute takes the process down at the first distance.
+  VectorStore store;
+  REQUIRE(store.reserve(128, 2) == Status::ok);
+  const std::vector<float> row(128, 1.0F);
+  REQUIRE(store.add(row).has_value());
+  REQUIRE(store.add(row).has_value());
+
+  for (const Metric metric : {Metric::l2, Metric::inner_product}) {
+    auto computer = make_distance_computer(metric, store, detected_kernel());
+    REQUIRE(computer != nullptr);
+    computer->prepare_query(row.data());
+    // Executes the kernel's actual instruction mix, which is the only way to
+    // find out that it runs here.
+    CHECK(computer->distance_to(0) == computer->distance_to(1));
+  }
+}
+
 TEST_CASE("every KernelKind has a name", "[distance]") {
   // These strings end up in results.json and benchmark output, so a missing
   // one is a hole in the record of what was measured.

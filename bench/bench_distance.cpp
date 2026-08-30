@@ -112,16 +112,8 @@ const VectorStore& shared_store(std::size_t dim, Residency residency) {
   return store;
 }
 
-void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t dim,
-         Residency residency) {
-  const VectorStore& store = shared_store(dim, residency);
-
-  auto computer = lodestone::make_distance_computer(metric, store, kernel);
-  if (computer == nullptr) {
-    state.SkipWithError("kernel unavailable on this build or CPU");
-    return;
-  }
-
+void run_with(benchmark::State& state, DistanceComputer& computer,
+              const VectorStore& store, std::size_t dim) {
   std::vector<float> query(dim);
   {
     std::mt19937 rng(4242);
@@ -130,7 +122,7 @@ void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t 
       x = values(rng);
     }
   }
-  computer->prepare_query(query.data());
+  computer.prepare_query(query.data());
 
   const std::size_t count = store.size();
   const std::size_t batch = std::min(scan_batch, count);
@@ -149,8 +141,8 @@ void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t 
     benchmark::DoNotOptimize(unused);
     for (std::size_t base = 0; base < count; base += batch) {
       const std::size_t n = std::min(batch, count - base);
-      computer->distances_to(std::span<const VectorId>(ids).subspan(base, n),
-                             std::span<float>(out).first(n));
+      computer.distances_to(std::span<const VectorId>(ids).subspan(base, n),
+                            std::span<float>(out).first(n));
       benchmark::DoNotOptimize(out.data());
     }
     benchmark::ClobberMemory();
@@ -175,6 +167,17 @@ void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t 
                              benchmark::Counter::kInvert);
 }
 
+void run(benchmark::State& state, Metric metric, KernelKind kernel, std::size_t dim,
+         Residency residency) {
+  const VectorStore& store = shared_store(dim, residency);
+  auto computer = lodestone::make_distance_computer(metric, store, kernel);
+  if (computer == nullptr) {
+    state.SkipWithError("kernel unavailable on this build or CPU");
+    return;
+  }
+  run_with(state, *computer, store, dim);
+}
+
 std::string_view metric_name(Metric metric) {
   return metric == Metric::l2 ? "l2" : "ip";
 }
@@ -192,6 +195,46 @@ bool kernel_available(KernelKind kernel) {
     return false;
   }
   return lodestone::make_distance_computer(Metric::l2, probe, kernel) != nullptr;
+}
+
+/// Task 5's accumulator sweep, registered separately from the kernel table.
+///
+/// L2 only, and both fixtures at both dimensions: the accumulator count is a
+/// property of the FMA dependency chain, so the interesting axis is fixture and
+/// dimension, not metric.
+void register_accumulator_sweep() {
+  VectorStore probe;
+  if (probe.reserve(16, 1) != Status::ok) {
+    return;
+  }
+  if (lodestone::detail::make_avx2_experiment(Metric::l2, probe, 1) == nullptr) {
+    return; // no AVX2 on this CPU
+  }
+
+  for (const std::size_t accumulators : {std::size_t{1}, std::size_t{2}, std::size_t{4},
+                                         std::size_t{8}}) {
+    for (const Residency residency : {Residency::l1, Residency::stream}) {
+      for (const std::size_t dim : {std::size_t{128}, std::size_t{960}}) {
+        std::string name = "acc";
+        name += std::to_string(accumulators);
+        name += "/l2/";
+        name += residency_name(residency);
+        name += "/dim";
+        name += std::to_string(dim);
+
+        benchmark::RegisterBenchmark(name, [=](benchmark::State& state) {
+          const VectorStore& store = shared_store(dim, residency);
+          auto computer =
+              lodestone::detail::make_avx2_experiment(Metric::l2, store, accumulators);
+          if (computer == nullptr) {
+            state.SkipWithError("accumulator count unavailable");
+            return;
+          }
+          run_with(state, *computer, store, dim);
+        });
+      }
+    }
+  }
 }
 
 void register_all() {
@@ -228,6 +271,7 @@ void register_all() {
 
 int main(int argc, char** argv) {
   register_all();
+  register_accumulator_sweep();
 
   benchmark::AddCustomContext("detected_kernel",
                               std::string(lodestone::kernel_name(

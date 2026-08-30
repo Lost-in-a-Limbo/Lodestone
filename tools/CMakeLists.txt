@@ -8,16 +8,22 @@ if(LODESTONE_BUILD_TESTS)
   # not something to put in a test suite.
   set(_siftsmall "${CMAKE_SOURCE_DIR}/data/siftsmall")
 
-  add_test(
-    NAME sift10k_recall_is_exactly_one
-    COMMAND
-      sift_check "${_siftsmall}/siftsmall_base.fvecs"
-      "${_siftsmall}/siftsmall_query.fvecs"
-      "${_siftsmall}/siftsmall_groundtruth.ivecs")
+  # One entry per kernel. This is Phase 2's real correctness gate: a SIMD kernel
+  # whose distances agree with scalar to 1e-5 can still return different
+  # neighbours, because a reordering only needs the gap between ranks 10 and 11
+  # to be smaller than the error. Requiring tie-aware recall@10 = 1.000000
+  # through each kernel catches that; a tolerance test does not.
+  foreach(_kernel auto scalar sse avx2)
+    add_test(
+      NAME sift10k_recall_is_exactly_one.${_kernel}
+      COMMAND
+        sift_check "--kernel=${_kernel}" "${_siftsmall}/siftsmall_base.fvecs"
+        "${_siftsmall}/siftsmall_query.fvecs"
+        "${_siftsmall}/siftsmall_groundtruth.ivecs")
+    # 4 means skip: no dataset, or a kernel this CPU cannot run. CI has neither
+    # a dataset nor a guaranteed AVX2 host and must stay green either way.
+    set_tests_properties(sift10k_recall_is_exactly_one.${_kernel}
+                         PROPERTIES SKIP_RETURN_CODE 4)
+  endforeach()
 
-  # The tool returns 4 when the dataset is absent, which ctest then reports as
-  # skipped rather than failed. CI has no data/ and must stay green; a laptop
-  # that has run ./tools/download_sift.sh gets the real assertion. Same code
-  # Catch2's own discovery uses, so "4 means skip" holds across the whole suite.
-  set_tests_properties(sift10k_recall_is_exactly_one PROPERTIES SKIP_RETURN_CODE 4)
 endif()

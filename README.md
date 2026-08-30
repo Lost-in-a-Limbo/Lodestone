@@ -53,8 +53,8 @@ Everything is written from scratch. `hnswlib` and `faiss` appear only in `bench/
 |---|---|---|
 | 0 | Scaffolding, CMake, CI | ✅ done |
 | 1 | `.fvecs` parsing, aligned storage, brute-force ground truth | ✅ done |
-| 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | 🔨 in progress |
-| 3 | HNSW construction and search | — |
+| 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | ✅ done |
+| 3 | HNSW construction and search | 🔨 in progress |
 | 4 | Benchmark harness, comparison against `hnswlib` | — |
 | 5 | Product quantization | — |
 | 6 | **Filtered search — reproducing the collapse** | — |
@@ -75,7 +75,8 @@ Exact brute force on SIFT1M, single-threaded, machine specs and regeneration com
 |---|---|
 | Load, 1M × 128 vectors | 0.33 s |
 | Peak RSS | 501.6 MiB |
-| Brute-force throughput | 11.58 QPS (median of 3, 1.7% spread) |
+| Brute-force throughput | **32.32 QPS** (median of 3) — 30.9 ms/query |
+| Distance kernel | AVX2, **11.1×** hand-written scalar |
 | **recall@10** | **1.000000** |
 
 That recall figure has a story attached. Strict id-set comparison against the provided ground truth gives 0.999440, not 1.000 — and the 0.06% gap is not a bug. **SIFT1M contains 14,538 byte-identical duplicate vectors** among its million records, so when a duplicate lands on the k-th boundary, "the 10 nearest neighbours" is not a well-defined *set*: several answers are equally correct, and strict comparison measures whose tie-break convention won rather than whether the search was right. Recall is therefore reported thresholded on the k-th true distance, the ANN-Benchmarks convention.

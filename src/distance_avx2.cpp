@@ -1,14 +1,23 @@
 // Phase 2 — 8-wide AVX2 squared-L2 and inner-product kernels.
 //
-// **Single accumulator, on purpose.** Task 5 of .claude/plans/phase2.md is the
-// experiment that varies the accumulator count and publishes the whole curve,
-// and that experiment needs a naive baseline to move. Writing the tuned version
-// first would hide the most instructive number in the phase.
+// The kernel is templated on its accumulator count because task 5 of
+// .claude/plans/phase2.md is an experiment, not an implementation: measure 1, 2,
+// 4 and 8 independent accumulators, publish the whole curve including the
+// losers, and keep the winner.
 //
-// The SSE row already told us something that changes what to expect here: at
-// 4 wide, `stream` saturates single-core memory bandwidth at 15.5 GiB/s. So AVX2
-// should roughly halve the `l1` times and leave `stream` almost untouched. That
-// is recorded in BENCHMARKS.md as a prediction to be judged, not assumed.
+// The textbook argument for more accumulators: `vfmadd231ps` on Zen 3 has ~4
+// cycles of latency and 2/cycle of throughput, so a single accumulator makes
+// every FMA wait on the previous one and the loop runs at one FMA per 4 cycles
+// instead of two per cycle. Saturation needs latency x throughput = 8 chains.
+//
+// Measured before this task ran, and it says the textbook argument may not
+// apply here: the single-accumulator kernel already hits 8.64x scalar at
+// dim 128, taking 2.55 cycles per iteration where a 4-cycle dependent chain
+// should floor it at 4. The chain is already broken — `distances_to()` computes
+// independent distances back to back, so the tail of one overlaps the head of
+// the next, and batching supplies the parallelism extra accumulators would.
+//
+// See BENCHMARKS.md for the resulting curve.
 
 #include "lodestone/detail/prepared_query.hpp"
 #include "lodestone/distance.hpp"
@@ -45,17 +54,23 @@ namespace {
 /// Floats per AVX2 register.
 constexpr std::size_t lanes = 8;
 
+/// The accumulator count the shipped kernel uses.
+///
+/// Chosen by measurement, not by the latency argument — see BENCHMARKS.md. The
+/// curve is nearly flat, because `distances_to()` already overlaps independent
+/// distances and supplies the instruction-level parallelism that extra
+/// accumulators would otherwise provide.
+constexpr std::size_t default_accumulators = 4;
+
 /// Collapse eight lanes to one float.
 ///
 /// Fold the upper 128 bits onto the lower half first, then finish in SSE. The
-/// cast is free — it is a register view, not an instruction — while the
-/// `extractf128` is the only real cross-lane move needed.
+/// cast is free — a register view, not an instruction — while `extractf128` is
+/// the only real cross-lane move needed.
 ///
 /// Paid once per distance, not per element. At dim 128 the main loop runs 16
-/// iterations against this one reduction; at dim 960 it runs 120. So the
-/// reduction's share of the work shrinks as the dimension grows, which predicts
-/// a *larger* speedup at dim 960 than at dim 128 — and SSE already showed
-/// exactly that (3.95x versus 3.84x).
+/// eight-lane iterations against this one reduction; at dim 960 it runs 120. So
+/// the reduction's share of the work shrinks as the dimension grows.
 inline float horizontal_sum(__m256 v) {
   const __m128 low = _mm256_castps256_ps128(v);
   const __m128 high = _mm256_extractf128_ps(v, 1);
@@ -67,8 +82,10 @@ inline float horizontal_sum(__m256 v) {
   return _mm_cvtss_f32(_mm_add_ss(sum, upper)); // 2 -> 1
 }
 
-template <Metric metric_v>
+template <Metric metric_v, std::size_t accumulators>
 class Avx2Computer final : public DistanceComputer {
+  static_assert(accumulators >= 1);
+
 public:
   explicit Avx2Computer(const VectorStore& store)
       : store_(store), dim_(store.dim()), stride_(store.stride()),
@@ -90,38 +107,58 @@ public:
   [[nodiscard]] KernelKind kernel() const override { return KernelKind::avx2; }
 
 private:
+  /// One fused multiply-add step against accumulator `acc` at offset `offset`.
+  inline void step(__m256& acc, const float* stored, const float* query,
+                   std::size_t offset) const {
+    const __m256 a = _mm256_load_ps(stored + offset);
+    const __m256 b = _mm256_load_ps(query + offset);
+    if constexpr (metric_v == Metric::l2) {
+      const __m256 diff = _mm256_sub_ps(a, b);
+      acc = _mm256_fmadd_ps(diff, diff, acc);
+    } else {
+      acc = _mm256_fmadd_ps(a, b, acc);
+    }
+  }
+
   [[nodiscard]] float compute(VectorId id) const {
     const float* stored = store_.get(id);
     const float* query = query_.data();
 
-    __m256 acc = _mm256_setzero_ps();
+    __m256 acc[accumulators];
+    for (std::size_t a = 0; a < accumulators; ++a) {
+      acc[a] = _mm256_setzero_ps();
+    }
 
-    // No tail loop and no masked final load. stride_ is always a multiple of 16
-    // floats — so also a multiple of 8 — the store zeroes its own padding, and
-    // PreparedQuery zero-pads the query. Every padding term is therefore
-    // (0-0)^2 = 0 for L2 and 0*0 = 0 for inner product, and the loop simply
-    // runs to the end of the stride. The tail is the fiddliest and buggiest
-    // part of writing a SIMD kernel by hand, and Phase 1's D13 deleted it.
+    // No tail loop over *elements* and no masked load anywhere. stride_ is
+    // always a multiple of 16 floats, the store zeroes its own padding, and
+    // PreparedQuery zero-pads the query — so every padding term is (0-0)^2 = 0
+    // for L2 and 0*0 = 0 for inner product (D13).
+    //
+    // There is still a remainder loop, but over *accumulator groups*, not
+    // elements: with 4 accumulators the group is 32 floats and stride 112
+    // (dim 100) leaves 16 floats over. Those go through acc[0] eight at a time,
+    // which is still whole vectors — never a partial one.
     //
     // Both loads are aligned and neither straddles a cache line: the store is
     // 64-byte aligned with a 64-byte-multiple stride, and PreparedQuery is
-    // 64-byte aligned for exactly this reason — std::vector<float> would only
-    // have guaranteed 16, making _mm256_load_ps undefined on half its offsets.
-    for (std::size_t i = 0; i < stride_; i += lanes) {
-      const __m256 a = _mm256_load_ps(stored + i);
-      const __m256 b = _mm256_load_ps(query + i);
-      if constexpr (metric_v == Metric::l2) {
-        const __m256 diff = _mm256_sub_ps(a, b);
-        // One sub plus one FMA per 8 elements. Every FMA depends on the
-        // previous one through `acc` — that single chain is what task 5
-        // measures the cost of.
-        acc = _mm256_fmadd_ps(diff, diff, acc);
-      } else {
-        acc = _mm256_fmadd_ps(a, b, acc);
+    // 64-byte aligned for the same reason.
+    constexpr std::size_t group = lanes * accumulators;
+    std::size_t i = 0;
+    for (; i + group <= stride_; i += group) {
+      for (std::size_t a = 0; a < accumulators; ++a) {
+        step(acc[a], stored, query, i + (a * lanes));
       }
     }
+    for (; i < stride_; i += lanes) {
+      step(acc[0], stored, query, i);
+    }
 
-    const float sum = horizontal_sum(acc);
+    __m256 total = acc[0];
+    for (std::size_t a = 1; a < accumulators; ++a) {
+      total = _mm256_add_ps(total, acc[a]);
+    }
+
+    const float sum = horizontal_sum(total);
 
     if constexpr (metric_v == Metric::inner_product) {
       // Negated once, here, so every consumer can assume smaller is closer.
@@ -137,16 +174,41 @@ private:
   detail::PreparedQuery query_;
 };
 
+template <std::size_t accumulators>
+std::unique_ptr<DistanceComputer> make_with(Metric metric, const VectorStore& store) {
+  if (metric == Metric::l2) {
+    return std::make_unique<Avx2Computer<Metric::l2, accumulators>>(store);
+  }
+  return std::make_unique<Avx2Computer<Metric::inner_product, accumulators>>(store);
+}
+
 } // namespace
 
 namespace detail {
 
 std::unique_ptr<DistanceComputer> make_avx2_l2(const VectorStore& store) {
-  return std::make_unique<Avx2Computer<Metric::l2>>(store);
+  return make_with<default_accumulators>(Metric::l2, store);
 }
 
 std::unique_ptr<DistanceComputer> make_avx2_ip(const VectorStore& store) {
-  return std::make_unique<Avx2Computer<Metric::inner_product>>(store);
+  return make_with<default_accumulators>(Metric::inner_product, store);
+}
+
+std::unique_ptr<DistanceComputer> make_avx2_experiment(Metric metric,
+                                                       const VectorStore& store,
+                                                       std::size_t accumulators) {
+  switch (accumulators) {
+  case 1:
+    return make_with<1>(metric, store);
+  case 2:
+    return make_with<2>(metric, store);
+  case 4:
+    return make_with<4>(metric, store);
+  case 8:
+    return make_with<8>(metric, store);
+  default:
+    return nullptr;
+  }
 }
 
 } // namespace detail
