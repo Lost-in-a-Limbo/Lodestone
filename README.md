@@ -55,8 +55,8 @@ Everything is written from scratch. `hnswlib` and `faiss` appear only in `bench/
 | 1 | `.fvecs` parsing, aligned storage, brute-force ground truth | ✅ done |
 | 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | ✅ done |
 | 3 | HNSW construction and search | ✅ done |
-| 4 | Benchmark harness, comparison against `hnswlib` | 🔨 in progress |
-| 5 | Product quantization | — |
+| 4 | Benchmark harness, comparison against `hnswlib` | ✅ done |
+| 5 | Product quantization | 🔨 in progress |
 | 6 | **Filtered search — reproducing the collapse** | — |
 | 7 | An attempt at a fix | — |
 | 8 | Interactive results showcase | — |
@@ -67,20 +67,18 @@ Phase 6 is the point of the project. Everything before it is the measurement rig
 
 ## Benchmarks
 
-The comparison against `hnswlib` and `faiss` lands with Phase 4 — **including the cases where Lodestone loses and why.** Until then these are our own numbers against our own exact baseline, with machine specs and regeneration commands in [`BENCHMARKS.md`](BENCHMARKS.md).
+Against **hnswlib 0.8.0** on SIFT1M — identical corpus, queries, ground truth, `M` and `ef_construction`, single-threaded, both compiled `-O3 -march=native`. k = 10:
 
-**HNSW on SIFT1M**, single-threaded, k = 10:
+| ef | recall (Lodestone) | recall (hnswlib) | QPS (Lodestone) | QPS (hnswlib) |
+|---|---|---|---|---|
+| 32 | 0.9045 | 0.9040 | 12,623 | 10,751 |
+| **64** | **0.9644** | 0.9642 | **6,446** | 6,456 |
+| 128 | 0.9900 | 0.9901 | 4,129 | 3,305 |
+| 256 | 0.9980 | 0.9980 | 2,274 | 1,877 |
 
-| ef | recall@10 | QPS | vectors examined |
-|---|---|---|---|
-| 32 | 0.9045 | 10,822 | 743 |
-| **64** | **0.9644** | **6,046** | 1,230 |
-| 128 | 0.9900 | 3,444 | 2,128 |
-| 256 | 0.9980 | 1,855 | 3,728 |
+**The recall curves agree to within 0.0018 at every one of twelve operating points.** That is the result worth having: two independently written implementations of the same algorithm landing on the same recall everywhere is mutual validation. Throughput is at parity — Lodestone is ahead at 11 of 12 points (median 1.17×, sign test p = 0.0032) — but [`DECISIONS.md`](DECISIONS.md) D32 records why part of that win is an API difference rather than an algorithmic one, and [`BENCHMARKS.md`](BENCHMARKS.md) records the reproducibility criterion this machine **fails**.
 
-Build 403 s single-threaded, graph 135.9 MiB. Against exact brute force on the
-same machine — 32.3 QPS at recall 1.000000 — that is **187× the throughput at
-96.4% recall**, by looking at 1,230 of a million vectors instead of all of them.
+Against exact brute force on the same machine — 32.3 QPS at recall 1.000000 — HNSW at ef=64 is **187× the throughput at 96.4% recall**, by examining 1,230 of a million vectors. Build 360 s single-threaded, graph 135.9 MiB.
 
 The exact baseline underneath it:
 

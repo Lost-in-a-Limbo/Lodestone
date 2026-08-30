@@ -29,6 +29,7 @@ Any departure from the rules above is listed here rather than left implicit.
 | Phase | Rule | Deviation and why |
 |---|---|---|
 | 1 | 10-second warmup discarded | **Skipped.** A brute-force query streams the entire 488 MiB corpus, so there is no working set for a warmup to warm. Three runs still taken, median reported. |
+| 4 | Numbers reproduce within 5% | **NOT MET.** 16 of 24 measurements exceed it, median spread 7.3%, worst 17.8%. Two causes: documented thermal throttling, and a 10-second warmup that is demonstrably too short — run 1 was slowest in 13 of 24 measurements against a chance expectation of 8. Recall reproduces exactly; only throughput carries this. |
 | 2 | Three runs, median reported | **Kept, plus random interleaving.** The machine thermally throttles (86 °C idle, 92 °C loaded), so a fixed benchmark order penalises whatever runs last. Google Benchmark's `--benchmark_enable_random_interleaving` with 9 repetitions. Absolute ns figures still drift ~20% with machine state; **ratios reproduce within ~2%**, so ratios are what the headline numbers report. |
 
 ---
@@ -521,9 +522,109 @@ rather than papered over, because a test that cannot fail is worse than no test.
 
 ## Phase 4 — versus hnswlib
 
-| Index | recall@10 | QPS | Ratio | Note |
-|---|---|---|---|---|
-| — | — | — | — | — |
+Machine M1, `release` preset, AVX2 selected automatically. Regenerate with:
+
+```bash
+./build/release/bench/bench --all      # writes bench/results/results.json
+```
+
+Identical corpus, identical queries, identical ground truth, identical
+`M = 16` / `ef_construction = 200`, single-threaded on both sides, 10 s warmup
+discarded, median of 3 runs. hnswlib 0.8.0, header-only, compiled into the
+benchmark with the same `-O3 -march=native` this project uses — so its own SIMD
+path is active and the comparison is not handicapping it.
+
+### The curve, SIFT1M, k = 10
+
+| ef | recall (Lodestone) | recall (hnswlib) | QPS (Lodestone) | QPS (hnswlib) | ratio |
+|---|---|---|---|---|---|
+| 16 | 0.8023 | 0.8022 | 21,134 | 17,198 | 1.23× |
+| 32 | 0.9045 | 0.9040 | 12,623 | 10,751 | 1.17× |
+| 64 | 0.9644 | 0.9642 | 6,446 | 6,456 | 1.00× |
+| 128 | 0.9900 | 0.9901 | 4,129 | 3,305 | 1.25× |
+| 256 | 0.9980 | 0.9980 | 2,274 | 1,877 | 1.21× |
+
+Full sweep including k = 1 and k = 100, latency percentiles and per-run figures
+is in `bench/results/results.json`.
+
+### The recall curves are the same curve
+
+**Maximum absolute recall difference across all twelve operating points:
+0.0018.** At k = 10, ef = 256 both report 0.9980; at ef = 128, 0.9900 versus
+0.9901.
+
+This is the most valuable thing in the comparison and it is not the speed. Two
+independently written implementations of Algorithms 1–5, with different
+languages of expression, different pruning code and different heap handling,
+land on the same recall at every operating point. That is mutual validation:
+either both are correct, or both are wrong in exactly the same way, and the
+second is far less likely than the first.
+
+It also means that **for this pair, matching on ef happens to be matching on
+recall** — so the QPS column can be read directly. That was not safe to assume
+in advance, and the harness does not assume it.
+
+### On throughput: the direction is real, the magnitude is not well resolved
+
+Lodestone is faster at **11 of 12 operating points**, tied at the twelfth, with
+a median ratio of **1.17×**.
+
+Taken point by point that would be over-reading the data: per-point run-to-run
+spread reaches 17.8% (see below), which is larger than most of the individual
+gaps. But the *sign* is a separate question from the magnitude, and 11 wins out
+of 12 independent operating points has a one-sided sign-test **p = 0.0032**.
+Noise does not produce that.
+
+So: **the exit criterion "QPS within 5× of hnswlib at matched recall" is met by
+a wide margin — Lodestone is at parity or slightly ahead.** The honest phrasing
+is "comparable, consistently a little faster", not "1.2× faster".
+
+### Why we might be ahead, and why some of it is not a fair win
+
+Published because PRD §4 asks for the gap explained, and that obligation does
+not lapse when the gap points the other way.
+
+- **hnswlib's `searchKnn` returns a `std::priority_queue` by value.** That is a
+  heap allocation per query. Lodestone writes into a caller-provided span. This
+  is an API difference, not an algorithmic one, and it plausibly accounts for a
+  good part of the gap — it should be roughly constant per query, and the
+  advantage is indeed largest at low ef (1.23× at ef=16) where per-query time is
+  smallest.
+- **hnswlib does more.** It maintains a label→internal-id map, supports element
+  deletion with tombstones, and carries locking hooks for concurrent insert.
+  Lodestone has none of that. Comparing a feature-complete library against a
+  narrower one and reporting only the speed is not a like-for-like result.
+- **Lodestone batches through `distances_to()`.** Phase 2 established that
+  independent distances overlap in the pipeline; hnswlib computes them one at a
+  time with software prefetch. This one *is* an algorithmic difference and is
+  the part of the gap that would survive an API fix.
+
+Build time: 359.7 s versus 438.5 s, so Lodestone builds 1.22× faster — with the
+same caveat, since hnswlib's `addPoint` maintains structures ours does not.
+
+### Exit criterion NOT met: numbers do not reproduce within 5%
+
+Stated plainly rather than buried. **16 of 24 measurements exceed the 5%
+run-to-run target; the median spread is 7.3% and the worst is 17.8%.**
+
+The cause is partly the documented thermal throttling (Phase 2: 86 °C idle,
+92 °C loaded, absolute timings drifting 20–45%), but the data shows a second,
+fixable cause:
+
+> **Run 1 was the slowest of three in 13 of 24 measurements**, where chance
+> alone would give about 8. The worst point's raw runs were 3,542 / 3,766 /
+> 4,210 QPS — monotonically increasing.
+
+A 10-second warmup is not enough to reach steady state on this workload. The
+fix is to discard the first *measured* run as well as the warmup, or to warm up
+until the throughput stops rising rather than for a fixed wall-clock time.
+Recorded here rather than quietly re-run, because the harness's job is to make
+this visible.
+
+**What does reproduce exactly: recall.** It is computed from the graph and the
+data, not from the clock, and it is identical across runs to every digit
+reported. Every correctness claim in this file rests on that; only the
+throughput figures carry this caveat.
 
 ## Phase 5 — product quantisation
 

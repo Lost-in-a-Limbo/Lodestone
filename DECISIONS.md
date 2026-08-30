@@ -616,3 +616,91 @@ PRD section 6 suggests sweeping `ef ∈ {8, 16, …}` while the headline metric 
 recall@10, so `ef = 8` is unservable. The sweep prints it as skipped rather than
 clamping to 10 — a row labelled `ef=8` that had actually run at ef=10 would be a
 lie in a published table.
+
+---
+
+## D29 — hnswlib is `DOWNLOAD_ONLY`, SYSTEM-included, and lives only in `bench/`
+
+**Phase 4.** `bench/CMakeLists.txt`
+
+Architecture rule 3 says no dependency enters the core. hnswlib is the
+comparison baseline, so it is fetched with `DOWNLOAD_ONLY YES` — its
+`CMakeLists.txt` never runs, so none of its flags, example targets or test
+targets are inherited — and added as a `SYSTEM` include so this project's
+`-Wconversion` has no opinions about somebody else's headers.
+
+It is header-only, so this costs nothing. `lodestone_core` does not know it
+exists, and the `bench` target is the only thing that includes it.
+
+Compiled with the same `-O3 -march=native` as everything else, so its own SIMD
+path is active. A comparison that quietly built the reference implementation
+without vectorisation would be worthless.
+
+---
+
+## D30 — The comparison matches on recall, never on ef
+
+**Phase 4.** `bench/bench_main.cpp`
+
+Two implementations do not agree on what a given `ef` buys — different
+neighbour selection, different pruning, different entry points. Comparing
+`ef = 64` against `ef = 64` compares two different operating points and
+flatters whichever explores less.
+
+So the harness emits a curve and the comparison is read vertically: at the same
+recall, who is faster. The ANN-Benchmarks convention, and the only reading that
+cannot be gamed by tuning one side's parameters.
+
+As it happens the two agree on recall to within 0.0018 at every operating point,
+so for *this* pair matching on ef is matching on recall — but that was not safe
+to assume in advance and the harness does not assume it.
+
+---
+
+## D31 — The 5% reproducibility criterion is not met, and that is reported
+
+**Phase 4.** `BENCHMARKS.md`
+
+16 of 24 measurements exceed the ±5% run-to-run target. Median spread 7.3%,
+worst 17.8%.
+
+Two causes, and the second was found in the data rather than assumed:
+
+1. The documented thermal throttling (Phase 2) — 86 °C idle, 92 °C loaded.
+2. **A 10-second warmup that is too short.** Run 1 was the slowest of three in
+   13 of 24 measurements, against a chance expectation of about 8, and the worst
+   point's runs rose monotonically: 3,542 / 3,766 / 4,210 QPS.
+
+The fix for the second is to discard the first *measured* run as well as the
+warmup, or to warm until throughput stops rising rather than for a fixed wall
+clock. Not applied yet — logged in `IDEAS.md` — because changing the
+methodology after seeing the numbers is how a benchmark stops being one. The
+next phase that needs throughput figures applies it before measuring.
+
+**Recall reproduces exactly**, being computed from the graph and the data rather
+than the clock. Every correctness claim rests on recall; only throughput carries
+the caveat.
+
+---
+
+## D32 — The hnswlib result is published with the reasons it may be unfair
+
+**Phase 4.** Lodestone is faster at 11 of 12 operating points, median 1.17×,
+one-sided sign test p = 0.0032.
+
+PRD §4 requires the gap explained. That obligation does not lapse when the gap
+points our way, so the reasons the win may be partly unearned are recorded next
+to it:
+
+- `hnswlib::searchKnn` returns a `std::priority_queue` **by value** — a heap
+  allocation per query — where Lodestone writes into a caller-provided span.
+  An API difference, not an algorithmic one, and consistent with the advantage
+  being largest at low ef where per-query time is smallest.
+- hnswlib maintains a label map, deletion tombstones and locking hooks that this
+  project does not implement. It is doing more work because it does more.
+- Lodestone batches through `distances_to()`, which Phase 2 showed is where the
+  instruction-level parallelism comes from. This part *is* algorithmic and would
+  survive an API fix.
+
+The defensible claim is "comparable, consistently a little faster" — not
+"1.2× faster than hnswlib".

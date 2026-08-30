@@ -88,6 +88,32 @@ queries, so this is currently correct and cheap. If Phase 4 ever wants parallel
 query throughput, the fix is a caller-owned `SearchScratch` parameter rather
 than one index per thread.
 
+### Warm until throughput stops rising, not for a fixed 10 seconds
+**Raised:** Phase 4. **Needed by:** any phase that reports throughput.
+
+Run 1 was the slowest of three in 13 of 24 Phase 4 measurements, against a
+chance expectation of ~8, and the worst point rose monotonically across its
+three runs. A fixed 10-second warmup does not reach steady state on this
+workload.
+
+Two candidate fixes: discard the first measured run as well as the warmup, or
+warm adaptively until throughput plateaus. Deliberately **not** applied during
+Phase 4 — changing methodology after seeing the numbers is how a benchmark
+stops being one. Apply it before the next set of throughput measurements, not
+after.
+
+### FAISS as a second baseline
+**Raised:** Phase 0 (C14), deferred again in Phase 4.
+
+PRD §6 names both hnswlib and FAISS. hnswlib is header-only and integrated in
+about fifteen lines; FAISS pulls BLAS and OpenMP and is a substantially larger
+build. One well-understood reference that agrees with us on recall to 0.0018 is
+worth more than two poorly-integrated ones, and the marginal information from a
+second HNSW implementation is small.
+
+Worth doing if the project ever needs an IVF or PQ baseline, which is Phase 5's
+territory rather than Phase 4's.
+
 ### DONE — 64-byte-align the prepared query buffer
 **Raised:** Phase 1 task 3. **Answered:** Phase 2 task 4.
 

@@ -3,39 +3,41 @@
 > Update this the moment a phase closes. It is the first thing read at the
 > start of every session — it is how both you and Claude Code know where you are.
 
-## → PHASE 4: Benchmark harness
+## → PHASE 5: Product quantization
 
-**Goal:** the measurement rig everything downstream depends on. Build it
-properly now — Phases 5, 6 and 7 all report through it.
+**Goal:** compress the vectors, measure what accuracy it costs. This is the ML
+content of an ML-systems project — k-means, lossy compression, and the
+accuracy/memory frontier.
 
-**Exit criteria (PRD §6 Phase 4)**
-- [ ] `./bench --all` produces `bench/results/results.json` with no manual steps
-- [ ] recall@1, @10, @100; QPS; p50/p95/p99 latency; index memory; build time
-- [ ] Machine spec captured automatically — CPU, cores, RAM, compiler, flags
-- [ ] Warmup discarded, minimum 3 runs, median reported
-- [ ] A comparison harness running `hnswlib` on identical data
-- [ ] Numbers reproduce within 5% across three runs
-- [ ] `BENCHMARKS.md` has our curve next to hnswlib's
+**Exit criteria (PRD §6 Phase 5)**
+- [ ] Per-subspace k-means, 256 centroids → one byte per subspace
+- [ ] Codebook training
+- [ ] Asymmetric distance with precomputed lookup tables
+- [ ] 128-dim float32 (512 bytes) compressed to 16 bytes — 32× reduction
+- [ ] Recall loss quantified at each compression ratio
+- [ ] You can explain asymmetric versus symmetric distance computation
+- [ ] **It must plug in through `DistanceComputer` without touching `hnsw.cpp`**
 
-**Resume bullet unlocks here.** This is the phase that makes the project
-citable.
+**Record:** memory per vector and recall@10 at m ∈ {8, 16, 32} subspaces.
 
 **Blocked on:** nothing.
 
-**What Phase 3 leaves you:**
+**This phase is the test of D1.** The distance seam was designed in Phase 0
+specifically so that quantised distances could drop in here. `prepare_query()`
+exists because PQ needs per-query state: the query is projected once into a
+256×m lookup table, and every subsequent distance is m table lookups and adds.
+If Phase 5 finds itself editing `hnsw.cpp`, the seam was wrong and *that* is the
+thing to fix.
 
-1. `tools/hnsw_bench` already sweeps ef and prints recall/QPS/visited. Phase 4's
-   job is to make it emit JSON, add latency percentiles and recall@1/@100, and
-   put `hnswlib` beside it — not to rewrite the sweep.
-2. **Report tie-aware recall** (D17). Every Phase 3 number does.
-3. **Three measurement traps this project has already fallen into**, all
-   recorded: absolute timings drift ~20% with thermals so ratios are the stable
-   quantity (D-note in `BENCHMARKS.md`); a single run's agreement is not
-   evidence; and **anything measured on SIFT10K's 100 queries is indicative, not
-   a finding** — that one produced a wrong conclusion in Phase 3 that SIFT1M
-   overturned.
-4. The `hnswlib` comparison is the one number this phase cannot fudge. Match on
-   recall, not on ef — the two libraries will not agree on what a given ef buys.
+**What Phase 4 leaves you:**
+
+1. `./bench --all` writes `bench/results/results.json` with machine specs.
+   Phase 5 adds rows; it does not build a new harness.
+2. **Apply the warmup fix before measuring, not after** (`IDEAS.md`). Phase 4's
+   10-second warmup is demonstrably too short, and changing methodology after
+   seeing numbers is how a benchmark stops being one.
+3. Report tie-aware recall (D17), and the PQ recall loss is measured against
+   *our own* exact figures, not against hnswlib.
 
 ---
 
@@ -47,13 +49,39 @@ citable.
 | 1 | Data + brute force | **closed** | 2026-08-24 | recall@10 = 1.000000 tie-aware |
 | 2 | SIMD kernels | **closed** | 2026-08-27 | AVX2 11.1× scalar; 32.3 QPS brute force |
 | 3 | HNSW | **closed** | 2026-08-27 | recall@10 0.9644 @ 6,046 QPS |
-| 4 | Benchmark harness | **in progress** | — | full curve vs hnswlib |
-| 5 | Product quantization | not started | — | bytes/vector, recall loss |
+| 4 | Benchmark harness | **closed** | 2026-08-30 | parity with hnswlib, recall identical to 0.0018 |
+| 5 | Product quantization | **in progress** | — | bytes/vector, recall loss |
 | 6 | **Filtered search** | not started | — | **collapse curve** |
 | 7 | The attempt | not started | — | delta vs baselines |
 | 8 | Showcase | not started | — | deployed URL |
 
 **Resume-ready after Phase 4. Differentiating after Phase 6.**
+
+---
+
+## Phase 4 exit criteria
+
+- [x] `./bench --all` produces `bench/results/results.json` with no manual steps
+- [x] recall@1, @10, @100; QPS; p50/p95/p99; index memory; build time
+- [x] Machine spec captured automatically — CPU, cores, cache, RAM, compiler,
+      the actual build flags, the selected kernel, **and the CPU governor and
+      die temperature**, because on this machine those change the answer
+- [x] Warmup discarded, 3 runs, median reported
+- [x] `hnswlib` 0.8.0 on identical data, same M and ef_construction,
+      single-threaded, same `-march=native`
+- [x] `BENCHMARKS.md` has both curves side by side, with the reasons our win
+      may be partly unearned recorded next to it
+- [ ] **Numbers reproduce within 5% — NOT MET.** 16 of 24 measurements exceed
+      it; median spread 7.3%, worst 17.8%. Two causes: documented thermal
+      throttling, and a 10-second warmup shown by the data to be too short (run
+      1 was slowest in 13 of 24 measurements against a chance expectation of 8).
+      Recall reproduces exactly. See D31 — the fix is logged and deliberately
+      not applied retroactively.
+
+**The headline: recall curves agree with hnswlib to within 0.0018 at every one
+of twelve operating points**, and Lodestone is faster at 11 of 12 (median 1.17×,
+sign-test p = 0.0032). The exit criterion asked for QPS within 5× of hnswlib;
+we are at parity or slightly ahead.
 
 ---
 
@@ -69,10 +97,9 @@ citable.
 - [x] Serialisation round-trips **bit-identically** — same edges, same answers
 - [x] **Recall@10 ≥ 0.95 on SIFT1M: 0.9644 at ef = 64**
 - [x] Build under 20 minutes single-threaded: **403 s (6.7 min)**
-- [ ] QPS within 5× of `hnswlib` at matched recall — **deferred to Phase 4**,
-      which is where the PRD puts the comparison harness. Our own curve is
-      recorded; the comparison is not yet run, and it is the number this project
-      cannot fudge.
+- [x] QPS within 5× of `hnswlib` at matched recall — **done in Phase 4**, where
+      the PRD puts the comparison harness. Result: parity, Lodestone faster at
+      11 of 12 operating points.
 
 **187× brute force at 96.4% recall** — 6,046 QPS against 32.3, by visiting 1,230
 of a million vectors instead of all of them.
@@ -145,29 +172,38 @@ compile error and proves nothing.
                      found+fixed a duplicate-in-results bug; corrected a
                      plateau claim made from 100 queries; 87 tests;
                      Phase 3 closed
+2026-08-30  Phase 4  bench harness -> results.json with machine specs;
+                     hnswlib 0.8.0 comparison on identical data; recall curves
+                     agree to 0.0018, QPS parity (11/12 points ahead,
+                     p=0.0032); 5% reproducibility criterion NOT met and
+                     reported; fixed CI format job red since Phase 0;
+                     Phase 4 closed
 ```
 
 ---
 
 ## Numbers recorded so far
 
-Full detail, methodology and regeneration commands in `BENCHMARKS.md`.
+Full detail, methodology and regeneration commands in `BENCHMARKS.md`; raw data
+in `bench/results/results.json`.
 
 | Metric | Value | Machine | Date |
 |---|---|---|---|
-| **HNSW recall@10 / QPS** | **0.9644 @ 6,046 QPS** (ef=64) | M1 | 2026-08-27 |
-| — at ef=128 | 0.9900 @ 3,444 QPS | M1 | 2026-08-27 |
-| — at ef=256 | 0.9980 @ 1,855 QPS | M1 | 2026-08-27 |
-| HNSW build, 1M | 403 s, 2,479 vectors/s | M1 | 2026-08-27 |
+| **vs hnswlib, recall** | **identical to within 0.0018** at 12 operating points | M1 | 2026-08-30 |
+| **vs hnswlib, QPS** | **parity** — faster at 11/12 points, median 1.17×, p=0.0032 | M1 | 2026-08-30 |
+| HNSW recall@10 / QPS | 0.9644 @ 6,446 QPS (ef=64) | M1 | 2026-08-30 |
+| — at ef=128 | 0.9900 @ 4,129 QPS | M1 | 2026-08-30 |
+| — at ef=256 | 0.9980 @ 2,274 QPS | M1 | 2026-08-30 |
+| HNSW recall@1 | 0.9998 @ 2,149 QPS (ef=256) | M1 | 2026-08-30 |
+| HNSW recall@100 | 0.9863 @ 2,213 QPS (ef=256) | M1 | 2026-08-30 |
+| p50 / p99 latency, ef=64 k=10 | 157 µs / 339 µs | M1 | 2026-08-30 |
+| HNSW build, 1M | 360 s (hnswlib 439 s) | M1 | 2026-08-30 |
 | HNSW graph memory | 135.9 MiB (~142 B/vector) | M1 | 2026-08-27 |
 | Nodes visited/query, ef=64 | 1,230 — **0.12% of the corpus** | M1 | 2026-08-27 |
-| Neighbour heuristic worth | ~1.7× throughput at matched recall | M1 | 2026-08-27 |
 | Brute force, AVX2 | 32.32 QPS, recall 1.000000 | M1 | 2026-08-27 |
-| Brute force, scalar | 11.58 QPS | M1 | 2026-08-24 |
 | AVX2 vs scalar, compute-bound | 11.11× (dim 128) | M1 | 2026-08-27 |
-| Load, 1M × 128 | 0.33–1.01 s | M1 | 2026-08-27 |
 | SIFT1M distinct vectors | 985,462 of 1,000,000 | — | 2026-08-24 |
-| Tests passing | 87/87 on 3 presets | M1 | 2026-08-27 |
+| Tests passing | 87/87 on 3 presets | M1 | 2026-08-30 |
 
 **Machine M1:** AMD Ryzen 5 7530U (Zen 3, 6C/12T, 4546 MHz max), 15 GiB RAM,
 GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
@@ -176,15 +212,26 @@ GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
 
 ## Open questions
 
-- [ ] **How does the curve compare to `hnswlib` at matched recall?** The one
-      number this project cannot fudge, and the reason Phase 4 exists. Match on
-      recall, never on ef.
-- [ ] Build is 2,479 vectors/s single-threaded. Where does that go — the
-      `ef_construction = 200` search, or the heuristic's O(M²) distance checks
-      during selection? Never profiled.
-- [ ] Does `distances_to()` batching still pay at graph-sized batches (M ≈ 16–32
-      unvisited neighbours) as it did at 256? Carried from Phase 2, still open,
-      and now there is a real consumer to measure.
+- [ ] Does the PQ lookup-table path actually beat the AVX2 exact kernel? m
+      table lookups and adds against 16 FMAs is not obviously a win at dim 128 —
+      the compression is the point, but the speed claim needs measuring.
+- [ ] How much of the hnswlib throughput gap is the `priority_queue` allocation
+      versus the `distances_to()` batching? Separable by patching a local copy
+      of hnswlib to write into a span, which would say which part of the win is
+      algorithmic.
+- [ ] Build is 2,479 vectors/s single-threaded and has never been profiled —
+      `ef_construction` search, or the heuristic's O(M²) checks?
+
+### Resolved during Phase 4
+
+- [x] **How does the curve compare to hnswlib at matched recall?** Parity.
+      Recall identical to 0.0018 at all twelve operating points; Lodestone
+      faster at 11 of 12, median 1.17×, sign test p = 0.0032. Reasons the win
+      may be partly unearned are recorded in D32.
+- [x] **Do the numbers reproduce within 5%?** No — and the harness found why.
+      Beyond the known thermal drift, run 1 was slowest in 13 of 24
+      measurements, so the 10-second warmup is too short. D31, fix in
+      `IDEAS.md`.
 
 ### Resolved during Phase 3
 
