@@ -470,3 +470,32 @@ TEST_CASE("ground-truth row order is checked against our own metric", "[brute_fo
     CHECK(validate_ground_truth_order(*computer, row) == Status::ok);
   }
 }
+
+TEST_CASE("tie-aware recall ignores the distance a caller carried in", "[brute_force]") {
+  // Both sides of the threshold comparison must come from the same computer.
+  // The `distance` field of a Neighbor need not: an approximate computer fills
+  // it with an estimate on a different scale, and comparing that against an
+  // exact threshold measures nothing at all.
+  //
+  // Phase 5 hit this for real. With PQ at m=8 the metric reported 0.9690 where
+  // the truth was 0.5600, and made recall appear to *fall* as the codebook got
+  // finer — the opposite of what the compression was doing.
+  const auto store = line_store(10);
+  auto computer = make_distance_computer(Metric::l2, store);
+  REQUIRE(computer != nullptr);
+
+  const float query = 0.0F;
+  computer->prepare_query(&query);
+
+  const std::vector<std::int32_t> truth = {0, 1, 2};
+
+  // Correct ids, but the caller has attached wildly wrong distances — as a
+  // lossy computer would. Recall must still be 1.0, because the ids are right.
+  const std::vector<Neighbor> lying = {{0, 999999.0F}, {1, 888888.0F}, {2, 777777.0F}};
+  CHECK(recall_at_k_tied(*computer, lying, truth) == 1.0);
+
+  // And the converse: wrong ids with flatteringly small distances attached must
+  // still score badly.
+  const std::vector<Neighbor> flattering = {{0, 0.0F}, {1, 0.0F}, {9, 0.0F}};
+  CHECK(recall_at_k_tied(*computer, flattering, truth) < 1.0);
+}

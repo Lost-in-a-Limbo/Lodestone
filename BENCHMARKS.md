@@ -628,9 +628,105 @@ throughput figures carry this caveat.
 
 ## Phase 5 — product quantisation
 
-| m | bytes/vector | recall@10 | Machine |
-|---|---|---|---|
-| — | — | — | — |
+Machine M1, `release` preset. Codebooks trained on `sift_learn.fvecs` — 100,000
+**held-out** vectors, not the corpus being encoded. Regenerate with:
+
+```bash
+./build/release/bench/bench --all --pq --pq-m=8,16,32 --k=10 --ef=64,128
+```
+
+Asymmetric distance (ADC): the query stays full precision, only the stored
+vectors are quantized. **No re-ranking** — it would recover most of the loss
+this section exists to measure (D35).
+
+### The recall/memory frontier, SIFT1M, k = 10
+
+| | bytes/vector | reduction | corpus | reconstruction error | **recall@10** | QPS |
+|---|---|---|---|---|---|---|
+| exact float32 | 512 | 1× | 488.3 MiB | 0 | **1.000000** | 32.3 |
+| PQ m = 32 | 32 | 16× | 30.5 MiB | 3,613 | **0.7234** | 42.9 |
+| **PQ m = 16** | **16** | **32×** | **15.3 MiB** | 10,592 | **0.5449** | 96.9 |
+| PQ m = 8 | 8 | 64× | 7.6 MiB | 23,688 | **0.3135** | 163.8 |
+
+Codebook is 128 KiB at every m — `m × 256 × (128/m)` floats is 32,768 floats
+regardless of m, which is why it is reported separately from the codes and why
+it stops mattering above a few thousand vectors.
+
+**Exit criterion met: 512 bytes → 16 bytes, a 32× reduction, at recall 0.5449.**
+
+Training is 21–35 s and encoding 10–17 s for the full million, both
+single-threaded and both one-time.
+
+### Reading the frontier honestly
+
+Recall falls steeply — 0.72 at 16×, 0.54 at 32×, 0.31 at 64×. That is what PQ
+costs *without re-ranking*, and it is the number PRD §6 asks to quantify. A
+production system fetches the top few thousand ADC candidates and re-scores them
+with exact distances, which recovers most of this; it is deliberately not
+implemented, because it recovers precisely the loss being measured (D35).
+
+Reconstruction error and recall move together in the right direction at every
+step — 23,688 → 10,592 → 3,613 against 0.31 → 0.54 → 0.72 — which is the
+internal consistency check that says the measurement is sound. **It did not,
+at first**, and that is recorded below.
+
+### PQ is faster than exact brute force, but not by the compression ratio
+
+| | vs exact brute force |
+|---|---|
+| m = 8 | 5.07× |
+| m = 16 | 3.00× |
+| m = 32 | 1.33× |
+
+32× less memory buys 3× more throughput, not 32×. Phase 2 established that
+brute force is memory-bandwidth-bound at 30.9 ms per query, so shrinking the
+corpus 32× ought to have been worth far more than this.
+
+It is not, because **ADC is not bandwidth-bound — it is bound by dependent
+loads.** Each distance is `m` lookups into a 16 KiB table, and each lookup is a
+load whose address depends on a byte just read from the code. The table sits in
+L1, so the loads are cheap individually, but they do not vectorise the way the
+exact kernel's 128 contiguous floats do. At m = 32 the lookups cost more than
+the 512 bytes of streaming they replaced, which is why the win shrinks as m
+grows and why m = 32 is barely faster than exact.
+
+The compression is a *memory* result, not a speed result. Reported as both,
+because reporting only the memory would imply the speed followed.
+
+### The metric was wrong, and the frontier is how it was caught
+
+The first PQ measurements had recall *rising* as the codebook got coarser —
+0.9690 at m = 8 against 0.9240 at m = 16 — while reconstruction error moved the
+other way. Two measurements of the same thing disagreeing about its direction is
+not a result.
+
+The cause was in `recall_at_k_tied`, not in the quantizer: it read the distance
+out of the `Neighbor` the search returned, and compared it against a threshold
+computed *exactly*. Fine for four phases, because every computer had been exact.
+PQ fills that field with a quantized estimate, and the comparison then measures
+nothing — reporting **0.9690 where the truth was 0.5600**, in the flattering
+direction.
+
+Fixed by recomputing the distance from the same computer that produced the
+threshold. For an exact computer the value is bit-identical, so **no Phase 1–4
+number moved** — re-verified against the SIFT10K exact check, still 1.000000.
+Full account in `DECISIONS.md` D34.
+
+### The warmup fix from Phase 4, applied and validated
+
+Phase 4 reported that its 10-second warmup was too short and logged the fix
+rather than applying it retroactively. Phase 5 applies it: one extra measured
+run is taken and the first is discarded.
+
+At the two `lodestone` operating points measured in both phases:
+
+| k=10 | Phase 4 spread | Phase 5 spread |
+|---|---|---|
+| ef = 64 | 12.3% | **1.9%** |
+| ef = 128 | 4.3% | **2.4%** |
+
+Both now inside the 5% reproducibility target that Phase 4 failed. The
+diagnosis was right and the fix works.
 
 ## Phase 6 — the selectivity sweep
 

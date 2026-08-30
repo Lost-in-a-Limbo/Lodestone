@@ -704,3 +704,132 @@ to it:
 
 The defensible claim is "comparable, consistently a little faster" — not
 "1.2× faster than hnswlib".
+
+---
+
+## D33 — PQ reached the graph through the seam. The honest accounting
+
+**Phase 5.** `src/hnsw.cpp`, `include/lodestone/hnsw.hpp`
+
+D1 chose an abstract `DistanceComputer` with `prepare_query()` over a concept
+plus templating, and the justification given in Phase 0 named this exact use:
+
+> the query is projected once into a 256×m lookup table, and every distance
+> after that is m table lookups and adds.
+
+**It paid off.** But the exit criterion's wording — "plugs in without touching
+`hnsw.cpp`" — is stronger than what actually happened, so here is the real diff:
+
+| File | Lines changed |
+|---|---|
+| `src/hnsw.cpp` | 22 |
+| `include/lodestone/hnsw.hpp` | 23 |
+
+`make_hnsw_index` built its own computers from `(store, metric)`. PQ needs a
+different construction path, so `make_hnsw_index_with(store, factory, ...)` was
+added and the original delegates to it. Every changed line is in the factory.
+
+**What did not change: `SEARCH-LAYER`, `INSERT`, `SELECT-NEIGHBORS` (both
+variants), `descend_to`, and the search path — zero lines each, verified by
+grepping the diff.** The graph algorithms did not learn that quantization
+exists.
+
+That is the claim worth making. "No changes to hnsw.cpp" would have been false;
+"no changes to any algorithm in hnsw.cpp" is true and is what the seam was for.
+
+One improvement fell out: `make_hnsw_index_with` takes the metric from the
+computer rather than as a separate parameter, so an index can no longer record a
+metric its own kernel does not implement.
+
+---
+
+## D34 — `recall_at_k_tied` recomputes distances instead of trusting the caller's
+
+**Phase 5.** `src/brute_force.cpp`. **A real bug, found by PQ.**
+
+The tie-aware metric thresholds on the k-th true distance and counts returned
+neighbours at most that far. It was reading the distance out of
+`Neighbor::distance` — the value the *search* attached.
+
+That is fine while every computer is exact, which it was for four phases. It
+breaks the moment a lossy one appears: PQ's asymmetric lookup fills that field
+with a **quantized estimate**, while the threshold is computed exactly. The
+comparison then measures nothing.
+
+**It was not a small error and it pointed the flattering way.** On SIFT10K at
+m = 8 the metric reported **0.9690 where the truth was 0.5600**, and it made
+recall appear to get *worse* as the codebook got finer — 0.9690 at m=8 against
+0.9240 at m=16 — which is the opposite of what the compression was doing.
+
+The tell was that reconstruction error moved the right way (24,797 → 11,167)
+while recall moved the wrong way. Two measurements of the same thing
+disagreeing about its direction is not a result, it is a bug.
+
+Fixed by recomputing the distance from the same computer that produced the
+threshold. For an exact computer the recomputed value is bit-identical to the
+carried one, so **no Phase 1–4 number moves** — verified by re-running the
+SIFT10K check, still 1.000000 by both measures.
+
+`tests/test_brute_force.cpp` now feeds the metric correct ids with absurd
+distances attached and requires 1.0, and wrong ids with flattering distances
+and requires less than 1.0.
+
+---
+
+## D35 — No re-ranking, deliberately
+
+**Phase 5.**
+
+Production PQ systems re-score the top candidates with exact distances, which
+recovers most of the lost recall for a small fraction of the scan cost. It is
+the obvious next thing and it is not implemented.
+
+The reason is that this phase's deliverable is *the recall loss*. Re-ranking
+recovers exactly the loss being measured, so a re-ranked number would answer a
+different question — "how good can a PQ system be" rather than "what does this
+compression cost". The second is what PRD §6 asks to quantify.
+
+Logged in `IDEAS.md` as the first thing to add if the index ever needs to be
+good rather than measured.
+
+---
+
+## D36 — PQ belongs at search time. The heuristic assumed `prepare_query` is cheap
+
+**Phase 5.** The most interesting thing this phase found, and it is about the
+seam rather than about quantization.
+
+`select_neighbours_heuristic` calls `computer.prepare_query()` **once per
+candidate**, because Algorithm 4 needs distances *from* each candidate *to* the
+already-selected set, and `prepare_query` is how this interface rebinds which
+point is "the query".
+
+For every kernel until Phase 5 that was a 512-byte memcpy. Measured:
+
+| Kernel | `prepare_query` | vs exact |
+|---|---|---|
+| exact, AVX2 | **28 ns** | 1× |
+| PQ, m = 8 | 10,381 ns | **373×** |
+| PQ, m = 16 | 9,834 ns | 354× |
+| PQ, m = 32 | 18,626 ns | **670×** |
+
+PQ's `prepare_query` rebuilds an `m × 256` table — 2,048 to 8,192 squared
+distances. Cheap once per *search*, which is what it was designed for.
+Catastrophic once per *candidate during construction*: the arithmetic works out
+to hours for a 1M build where the exact build takes six minutes, and the first
+attempt was killed at 22 minutes into the m = 8 index alone.
+
+**The seam is not wrong; an unstated assumption in the caller was.** D1 promised
+`prepare_query` would carry per-query state and it does. What nobody wrote down
+is that Algorithm 4 treats it as free, which held by accident for four phases.
+
+**The right design, and what FAISS does: build the graph with exact distances,
+search it with PQ.** PQ is a memory optimisation for the *stored corpus*, and
+construction is a one-time cost that can afford full precision. That needs the
+index to take two factories rather than one — a small change, logged in
+`IDEAS.md`, not made here because Phase 5's deliverable is the recall/memory
+curve and brute-force ADC measures it exactly.
+
+So the benchmark builds PQ-backed graphs only under `--pq-graph`, with the
+measurement above quoted in the code next to the flag. The default path
+measures brute-force ADC, which is what PRD §6 asks to quantify.

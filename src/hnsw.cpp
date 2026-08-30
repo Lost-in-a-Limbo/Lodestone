@@ -653,8 +653,9 @@ Status HnswIndexImpl::save(const std::filesystem::path& path) const {
 
 } // namespace
 
-std::unique_ptr<HnswIndex> make_hnsw_index(const VectorStore& store, Metric metric,
-                                           const HnswConfig& config, NeighbourSelection selection) {
+std::unique_ptr<HnswIndex> make_hnsw_index_with(const VectorStore& store, ComputerFactory factory,
+                                                const HnswConfig& config,
+                                                NeighbourSelection selection) {
   if (store.size() == 0 || store.dim() == 0) {
     return nullptr;
   }
@@ -666,15 +667,27 @@ std::unique_ptr<HnswIndex> make_hnsw_index(const VectorStore& store, Metric metr
     // it, so the graph would be starved of edges before pruning even ran.
     return nullptr;
   }
-
-  auto computer = make_distance_computer(metric, store);
-  auto build_computer = make_distance_computer(metric, store);
-  if (computer == nullptr || build_computer == nullptr) {
+  if (!factory) {
     return nullptr;
   }
 
+  auto computer = factory();
+  auto build_computer = factory();
+  if (computer == nullptr || build_computer == nullptr) {
+    return nullptr;
+  }
+  // The metric is taken from the computer rather than passed alongside it, so
+  // an index can never record a metric its own kernel does not implement.
+  const Metric metric = computer->metric();
+
   return std::make_unique<HnswIndexImpl>(store, metric, config, selection, std::move(computer),
                                          std::move(build_computer));
+}
+
+std::unique_ptr<HnswIndex> make_hnsw_index(const VectorStore& store, Metric metric,
+                                           const HnswConfig& config, NeighbourSelection selection) {
+  return make_hnsw_index_with(
+      store, [&store, metric] { return make_distance_computer(metric, store); }, config, selection);
 }
 
 std::unique_ptr<HnswIndex> load_hnsw_index(const std::filesystem::path& path,

@@ -3,41 +3,49 @@
 > Update this the moment a phase closes. It is the first thing read at the
 > start of every session — it is how both you and Claude Code know where you are.
 
-## → PHASE 5: Product quantization
+## → PHASE 6: Filtered search, and the collapse
 
-**Goal:** compress the vectors, measure what accuracy it costs. This is the ML
-content of an ML-systems project — k-means, lossy compression, and the
-accuracy/memory frontier.
+**This is the phase the project exists for.** Everything built so far is the
+measurement rig for this one experiment.
 
-**Exit criteria (PRD §6 Phase 5)**
-- [ ] Per-subspace k-means, 256 centroids → one byte per subspace
-- [ ] Codebook training
-- [ ] Asymmetric distance with precomputed lookup tables
-- [ ] 128-dim float32 (512 bytes) compressed to 16 bytes — 32× reduction
-- [ ] Recall loss quantified at each compression ratio
-- [ ] You can explain asymmetric versus symmetric distance computation
-- [ ] **It must plug in through `DistanceComputer` without touching `hnsw.cpp`**
+**Goal:** reproduce the recall collapse under a metadata predicate. Not avoid
+it — *reproduce* it, with numbers.
 
-**Record:** memory per vector and recall@10 at m ∈ {8, 16, 32} subspaces.
+**Exit criteria (PRD §6 Phase 6)**
+- [ ] Attribute store: categorical tags plus a numeric field per vector
+- [ ] Predicate evaluator over a roaring-bitmap-style membership structure
+- [ ] **Strategy A, pre-filter:** materialise the passing set, brute force it
+- [ ] **Strategy B, post-filter:** search with over-fetch factor `f`, discard misses
+- [ ] **Strategy C, in-filter:** predicate check before distance during traversal,
+      two-hop expansion when one-hop candidates run out (this is ACORN-1)
+- [ ] **Filtered ground-truth generator** — exact k-NN restricted to the passing
+      set, per predicate. Without it filtered recall cannot be measured at all.
+- [ ] Selectivity sweep: 100%, 50%, 30%, 10%, 5%, 1%, 0.5%, 0.1%
+- [ ] Both correlation regimes: uncorrelated, and negatively correlated where
+      passing vectors cluster away from queries
+- [ ] **The collapse is reproduced** — recall visibly falls below ~1% selectivity
+- [ ] Crossover points identified: at what selectivity does pre-filter beat in-filter?
+- [ ] `FINDINGS.md` documents it with numbers and a plot
+
+> If you reproduce a clean collapse curve and nothing else, the project has
+> already succeeded. Everything after this is upside.
 
 **Blocked on:** nothing.
 
-**This phase is the test of D1.** The distance seam was designed in Phase 0
-specifically so that quantised distances could drop in here. `prepare_query()`
-exists because PQ needs per-query state: the query is projected once into a
-256×m lookup table, and every subsequent distance is m table lookups and adds.
-If Phase 5 finds itself editing `hnsw.cpp`, the seam was wrong and *that* is the
-thing to fix.
+**What the previous five phases leave you:**
 
-**What Phase 4 leaves you:**
-
-1. `./bench --all` writes `bench/results/results.json` with machine specs.
-   Phase 5 adds rows; it does not build a new harness.
-2. **Apply the warmup fix before measuring, not after** (`IDEAS.md`). Phase 4's
-   10-second warmup is demonstrably too short, and changing methodology after
-   seeing numbers is how a benchmark stops being one.
-3. Report tie-aware recall (D17), and the PQ recall loss is measured against
-   *our own* exact figures, not against hnswlib.
+1. An HNSW index at 0.9644 recall @ 6,446 QPS, at parity with hnswlib, and an
+   exact brute force at 32.3 QPS to generate filtered ground truth with.
+2. `brute_force_knn` scans `[0, count)`. **Strategy A needs it over an arbitrary
+   id subset** — a second entry point sharing the internal scan, already logged
+   in `IDEAS.md` since Phase 1 with the signature chosen to make it easy.
+3. **Three measurement traps already paid for.** Ratios are stable where
+   absolutes are not; a single run's agreement is not evidence; and anything
+   measured on SIFT10K's 100 queries is indicative, never a finding.
+4. **A metric bug of exactly the shape Phase 6 could hit again.** D34: the
+   tie-aware recall trusted a distance the search attached, which broke the
+   moment an approximate computer appeared. Filtered recall introduces a *new*
+   ground truth per predicate — check it against brute force before trusting it.
 
 ---
 
@@ -50,12 +58,39 @@ thing to fix.
 | 2 | SIMD kernels | **closed** | 2026-08-27 | AVX2 11.1× scalar; 32.3 QPS brute force |
 | 3 | HNSW | **closed** | 2026-08-27 | recall@10 0.9644 @ 6,046 QPS |
 | 4 | Benchmark harness | **closed** | 2026-08-30 | parity with hnswlib, recall identical to 0.0018 |
-| 5 | Product quantization | **in progress** | — | bytes/vector, recall loss |
-| 6 | **Filtered search** | not started | — | **collapse curve** |
+| 5 | Product quantization | **closed** | 2026-08-31 | 32x smaller at recall 0.5449 |
+| 6 | **Filtered search** | **in progress** | — | **collapse curve** |
 | 7 | The attempt | not started | — | delta vs baselines |
 | 8 | Showcase | not started | — | deployed URL |
 
 **Resume-ready after Phase 4. Differentiating after Phase 6.**
+
+---
+
+## Phase 5 exit criteria — all met
+
+- [x] Per-subspace k-means, 256 centroids → one byte per subspace
+- [x] Codebook training, on the **held-out** learn split
+- [x] Asymmetric distance with precomputed lookup tables
+- [x] **512 bytes → 16 bytes, a 32× reduction**, at recall@10 = 0.5449
+- [x] Recall loss quantified at each ratio: 0.7234 at 16×, 0.5449 at 32×,
+      0.3135 at 64×
+- [x] Can explain asymmetric versus symmetric — `quantizer.hpp` states both and
+      why ADC wins for the same code size
+- [x] **Plugs in through `DistanceComputer`.** 22 lines changed in `hnsw.cpp`,
+      all in the factory; **zero in `SEARCH-LAYER`, `INSERT`,
+      `SELECT-NEIGHBORS`, `descend_to` or the search path.** D33 has the honest
+      accounting — "no changes to hnsw.cpp" would have been false.
+
+**The phase's real finding is about the seam, not the compression.** The
+neighbour heuristic calls `prepare_query()` once per candidate, which costs
+28 ns for the exact kernel and **10 µs for PQ** — 373× to 670×. PQ-backed
+*construction* is therefore hours where the exact build is six minutes. D1 was
+right that `prepare_query` was needed; what nobody wrote down is that Algorithm
+4 assumed it was free. The fix is the standard one — build with exact distances,
+search with PQ — and it is logged, not bodged. See D36.
+
+99 tests green on `debug`, `asan` and `release`.
 
 ---
 
@@ -178,6 +213,13 @@ compile error and proves nothing.
                      p=0.0032); 5% reproducibility criterion NOT met and
                      reported; fixed CI format job red since Phase 0;
                      Phase 4 closed
+2026-08-31  Phase 5  product quantization: k-means++ per subspace, 256
+                     centroids, ADC lookup tables; 512B -> 16B at recall
+                     0.5449; found and fixed a metric bug that reported 0.9690
+                     for a true 0.5600; found prepare_query is 373-670x more
+                     expensive for PQ, making PQ-backed construction
+                     impractical; applied the Phase 4 warmup fix and validated
+                     it (12.3% -> 1.9% spread); 99 tests; Phase 5 closed
 ```
 
 ---
@@ -189,21 +231,23 @@ in `bench/results/results.json`.
 
 | Metric | Value | Machine | Date |
 |---|---|---|---|
-| **vs hnswlib, recall** | **identical to within 0.0018** at 12 operating points | M1 | 2026-08-30 |
-| **vs hnswlib, QPS** | **parity** — faster at 11/12 points, median 1.17×, p=0.0032 | M1 | 2026-08-30 |
-| HNSW recall@10 / QPS | 0.9644 @ 6,446 QPS (ef=64) | M1 | 2026-08-30 |
-| — at ef=128 | 0.9900 @ 4,129 QPS | M1 | 2026-08-30 |
-| — at ef=256 | 0.9980 @ 2,274 QPS | M1 | 2026-08-30 |
-| HNSW recall@1 | 0.9998 @ 2,149 QPS (ef=256) | M1 | 2026-08-30 |
-| HNSW recall@100 | 0.9863 @ 2,213 QPS (ef=256) | M1 | 2026-08-30 |
-| p50 / p99 latency, ef=64 k=10 | 157 µs / 339 µs | M1 | 2026-08-30 |
-| HNSW build, 1M | 360 s (hnswlib 439 s) | M1 | 2026-08-30 |
+| **PQ: 32× smaller** | **16 B/vector, recall@10 0.5449** | M1 | 2026-08-31 |
+| — at 16× (m=32) | 32 B/vector, recall@10 0.7234 | M1 | 2026-08-31 |
+| — at 64× (m=8) | 8 B/vector, recall@10 0.3135 | M1 | 2026-08-31 |
+| PQ corpus memory | 488.3 MiB → 15.3 MiB at m=16 | M1 | 2026-08-31 |
+| `prepare_query` cost | exact 28 ns, PQ 10 µs — **373–670×** | M1 | 2026-08-31 |
+| vs hnswlib, recall | identical to within 0.0018 at 12 points | M1 | 2026-08-30 |
+| vs hnswlib, QPS | parity — faster at 11/12, median 1.17×, p=0.0032 | M1 | 2026-08-30 |
+| HNSW recall@10 / QPS | 0.9644 @ 7,071 QPS (ef=64, warmup fix applied) | M1 | 2026-08-31 |
+| — at ef=128 | 0.9900 @ 3,953 QPS | M1 | 2026-08-31 |
+| HNSW build, 1M | 348–383 s | M1 | 2026-08-31 |
 | HNSW graph memory | 135.9 MiB (~142 B/vector) | M1 | 2026-08-27 |
 | Nodes visited/query, ef=64 | 1,230 — **0.12% of the corpus** | M1 | 2026-08-27 |
 | Brute force, AVX2 | 32.32 QPS, recall 1.000000 | M1 | 2026-08-27 |
 | AVX2 vs scalar, compute-bound | 11.11× (dim 128) | M1 | 2026-08-27 |
+| Run-to-run spread, after warmup fix | 1.9–2.4% (was 4.3–12.3%) | M1 | 2026-08-31 |
 | SIFT1M distinct vectors | 985,462 of 1,000,000 | — | 2026-08-24 |
-| Tests passing | 87/87 on 3 presets | M1 | 2026-08-30 |
+| Tests passing | 99/99 on 3 presets | M1 | 2026-08-31 |
 
 **Machine M1:** AMD Ryzen 5 7530U (Zen 3, 6C/12T, 4546 MHz max), 15 GiB RAM,
 GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
@@ -212,15 +256,28 @@ GCC 11.4.0, CMake 4.3.1, Ninja 1.13.2. AVX2 + FMA, no AVX-512.
 
 ## Open questions
 
-- [ ] Does the PQ lookup-table path actually beat the AVX2 exact kernel? m
-      table lookups and adds against 16 FMAs is not obviously a win at dim 128 —
-      the compression is the point, but the speed claim needs measuring.
-- [ ] How much of the hnswlib throughput gap is the `priority_queue` allocation
-      versus the `distances_to()` batching? Separable by patching a local copy
-      of hnswlib to write into a span, which would say which part of the win is
-      algorithmic.
-- [ ] Build is 2,479 vectors/s single-threaded and has never been profiled —
-      `ef_construction` search, or the heuristic's O(M²) checks?
+- [ ] **Where does the collapse actually start?** The literature says below ~1%
+      selectivity. Reproducing that, on our own graph, with our own numbers, is
+      the whole point of Phase 6.
+- [ ] Is the negatively-correlated regime meaningfully worse than the
+      uncorrelated one, and by how much? Both are required, and the adversarial
+      case is where the interesting failure lives.
+- [ ] Does ACORN-1's two-hop expansion actually help below 1%, or does it just
+      cost time? Qdrant's published numbers say it stalls at 67.7% recall on a
+      1% filter; ours should be able to confirm or contradict that.
+
+### Resolved during Phase 5
+
+- [x] **Does PQ plug into the seam D1 built?** Yes, for search. 22 lines in the
+      factory, zero in any algorithm. But the heuristic's per-candidate
+      `prepare_query()` makes PQ-backed *construction* impractical — 373–670×
+      the exact cost. D36.
+- [x] **Does the PQ lookup path beat the AVX2 exact kernel?** Only partly: 5.07×
+      at m=8, 3.00× at m=16, 1.33× at m=32. 32× less memory buys 3× throughput,
+      because ADC is bound by dependent loads rather than bandwidth.
+- [x] **Did the Phase 4 warmup fix work?** Yes — spread at the same two
+      operating points went 12.3% → 1.9% and 4.3% → 2.4%, both now inside the
+      5% target Phase 4 failed.
 
 ### Resolved during Phase 4
 

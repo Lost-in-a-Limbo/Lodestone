@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -101,6 +102,27 @@ enum class NeighbourSelection : std::uint8_t {
 [[nodiscard]] std::unique_ptr<HnswIndex>
 make_hnsw_index(const VectorStore& store, Metric metric, const HnswConfig& config,
                 NeighbourSelection selection = NeighbourSelection::heuristic);
+
+/// Produces a fresh `DistanceComputer` on each call. The index needs two — one
+/// bound to the query being inserted, one for the neighbour-selection heuristic
+/// — so it asks for them rather than being handed one.
+using ComputerFactory = std::function<std::unique_ptr<DistanceComputer>()>;
+
+/// Build an index over `store` using computers the caller supplies.
+///
+/// **This is how Phase 5's quantized distances reach the graph**, and it is the
+/// entire accommodation the graph made for them: `make_hnsw_index` above simply
+/// delegates here with `make_distance_computer`. No algorithm changed — not
+/// `SEARCH-LAYER`, not `INSERT`, not the neighbour heuristic, not the search
+/// path. See DECISIONS.md D33 for the honest accounting of that claim, which is
+/// narrower than "without touching hnsw.cpp".
+///
+/// The factory must return computers over the same `store` and metric. Handing
+/// back a computer bound to different data would produce a graph whose edges
+/// mean nothing, with no symptom but poor recall.
+[[nodiscard]] std::unique_ptr<HnswIndex>
+make_hnsw_index_with(const VectorStore& store, ComputerFactory factory, const HnswConfig& config,
+                     NeighbourSelection selection = NeighbourSelection::heuristic);
 
 /// Reload a graph written by `save()`, re-binding it to a freshly loaded store.
 /// Returns nullptr if the file is malformed, or if its recorded shape does not

@@ -429,6 +429,111 @@
         }
       ],
       "version": "0.8.0"
+    },
+    {
+      "name": "lodestone-pq-bruteforce",
+      "pq": {
+        "bytes_per_vector": 8,
+        "centroids": 256,
+        "code_bytes": 8000000,
+        "codebook_bytes": 131072,
+        "compression_ratio": 64.0,
+        "distance": "asymmetric (ADC), query not quantized",
+        "encode_seconds": 10.993845787,
+        "reconstruction_error": 23687.818402740235,
+        "reranking": "none \u2014 it would recover recall and hide the loss",
+        "subspaces": 8,
+        "train_seconds": 21.939025931,
+        "trained_on": "held-out learn split"
+      },
+      "sweep": [
+        {
+          "ef": 0,
+          "k": 10,
+          "p50_us": 5679.065,
+          "p95_us": 6238.778,
+          "p99_us": 6862.256,
+          "qps": 163.75369940010654,
+          "qps_runs": [
+            158.78685514449322,
+            163.75369940010654,
+            174.23302641287154
+          ],
+          "qps_spread_pct": 9.432563248930345,
+          "recall": 0.3135400000000019,
+          "recall_strict": 0.3133600000000018
+        }
+      ]
+    },
+    {
+      "name": "lodestone-pq-bruteforce",
+      "pq": {
+        "bytes_per_vector": 16,
+        "centroids": 256,
+        "code_bytes": 16000000,
+        "codebook_bytes": 131072,
+        "compression_ratio": 32.0,
+        "distance": "asymmetric (ADC), query not quantized",
+        "encode_seconds": 10.018208036,
+        "reconstruction_error": 10591.545911058716,
+        "reranking": "none \u2014 it would recover recall and hide the loss",
+        "subspaces": 16,
+        "train_seconds": 21.430809868,
+        "trained_on": "held-out learn split"
+      },
+      "sweep": [
+        {
+          "ef": 0,
+          "k": 10,
+          "p50_us": 10064.325,
+          "p95_us": 11924.293,
+          "p99_us": 13812.834,
+          "qps": 96.91562106985896,
+          "qps_runs": [
+            97.9952264313453,
+            96.59460185429556,
+            96.91562106985896
+          ],
+          "qps_spread_pct": 1.4452000220275516,
+          "recall": 0.544859999999999,
+          "recall_strict": 0.544549999999999
+        }
+      ]
+    },
+    {
+      "name": "lodestone-pq-bruteforce",
+      "pq": {
+        "bytes_per_vector": 32,
+        "centroids": 256,
+        "code_bytes": 32000000,
+        "codebook_bytes": 131072,
+        "compression_ratio": 16.0,
+        "distance": "asymmetric (ADC), query not quantized",
+        "encode_seconds": 16.617778469,
+        "reconstruction_error": 3613.233580368408,
+        "reranking": "none \u2014 it would recover recall and hide the loss",
+        "subspaces": 32,
+        "train_seconds": 35.006846212,
+        "trained_on": "held-out learn split"
+      },
+      "sweep": [
+        {
+          "ef": 0,
+          "k": 10,
+          "p50_us": 23274.071,
+          "p95_us": 27094.592,
+          "p99_us": 31066.503,
+          "qps": 42.863661765263075,
+          "qps_runs": [
+            42.863661765263075,
+            42.65767114565376,
+            43.34906858171136
+          ],
+          "qps_spread_pct": 1.613015331830355,
+          "recall": 0.7234099999999993,
+          "recall_strict": 0.7229799999999993
+        }
+      ]
     }
   ],
   "machine": {
@@ -453,7 +558,25 @@
     "recall": "tie-aware, thresholded on the k-th true distance (DECISIONS.md D17)",
     "runs": 3,
     "threads": 1,
-    "warmup_seconds": 10.0
+    "warmup_seconds": 10.0,
+    "assembled_from": [
+      {
+        "command": "./bench --all",
+        "produced": [
+          "lodestone",
+          "hnswlib"
+        ],
+        "discarded_runs": "warmup only (10 s) \u2014 predates the Phase 5 fix"
+      },
+      {
+        "command": "./bench --all --pq --pq-m=8,16,32 --k=10 --ef=64,128 --skip-hnswlib",
+        "produced": [
+          "lodestone-pq-bruteforce"
+        ],
+        "discarded_runs": "warmup plus the first measured run"
+      }
+    ],
+    "note": "Assembled from two invocations because a combined run exceeds an hour. The two passes differ in how many runs are discarded; rows are comparable within a pass, and the lodestone rows appear in both so the difference is visible rather than hidden."
   },
   "schema_version": 1
 }

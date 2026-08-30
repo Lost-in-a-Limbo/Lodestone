@@ -17,6 +17,7 @@
 #include "lodestone/distance.hpp"
 #include "lodestone/hnsw.hpp"
 #include "lodestone/io.hpp"
+#include "lodestone/quantizer.hpp"
 #include "lodestone/types.hpp"
 #include "lodestone/vector_store.hpp"
 
@@ -225,7 +226,14 @@ Measurement measure(const SearchFn& search, const VectorStore& queries, const Iv
   std::vector<double> latencies_us;
   latencies_us.reserve(query_count);
 
-  for (std::size_t run = 0; run < runs; ++run) {
+  // One extra pass beyond `runs`, discarded. Phase 4's data showed the
+  // 10-second warmup does not reach steady state on this workload: run 1 was
+  // the slowest of three in 13 of 24 measurements, against a chance
+  // expectation of 8, and the worst point's runs rose monotonically. The fix
+  // was logged then and deliberately not applied retroactively — changing
+  // methodology after seeing numbers is how a benchmark stops being one — so
+  // it is applied here, before Phase 5 measures anything.
+  for (std::size_t run = 0; run < runs + 1; ++run) {
     latencies_us.clear();
     const auto run_start = clock_type::now();
 
@@ -236,7 +244,7 @@ Measurement measure(const SearchFn& search, const VectorStore& queries, const Iv
       const auto t1 = clock_type::now();
       latencies_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
 
-      if (run == 0) {
+      if (run == 1) {
         const auto row = truth.row(q).first(k);
         strict_total += recall_at_k(got, row);
         exact.prepare_query(query);
@@ -246,7 +254,9 @@ Measurement measure(const SearchFn& search, const VectorStore& queries, const Iv
     }
 
     const double elapsed = seconds_since(run_start);
-    result.qps_runs.push_back(static_cast<double>(query_count) / elapsed);
+    if (run > 0) {
+      result.qps_runs.push_back(static_cast<double>(query_count) / elapsed);
+    }
   }
 
   result.recall_tied = tied_total / static_cast<double>(query_count);
@@ -306,6 +316,9 @@ int main(int argc, char** argv) {
   bool all = false;
   bool small = false;
   bool skip_hnswlib = false;
+  bool with_pq = false;
+  bool pq_graph = false;
+  std::vector<std::size_t> pq_subspaces{8, 16, 32};
   std::size_t runs = 3;
   double warmup_seconds = 10.0;
   std::vector<std::size_t> ef_values{16, 32, 64, 128, 256};
@@ -321,6 +334,16 @@ int main(int argc, char** argv) {
       small = true;
     } else if (arg == "--skip-hnswlib") {
       skip_hnswlib = true;
+    } else if (arg == "--pq") {
+      with_pq = true;
+    } else if (arg == "--pq-graph") {
+      // Building the graph *through* a PQ computer. Measured to be impractical
+      // at 1M, so it is opt-in rather than default — see below.
+      with_pq = true;
+      pq_graph = true;
+    } else if (arg.starts_with("--pq-m=")) {
+      with_pq = true;
+      pq_subspaces = parse_list(arg.substr(7));
     } else if (arg.starts_with("--runs=")) {
       runs = parse_size(arg.substr(7)).value_or(3);
     } else if (arg.starts_with("--warmup=")) {
@@ -402,6 +425,8 @@ int main(int argc, char** argv) {
       {"queries_per_measurement", queries.size()},
       {"threads", 1},
       {"aggregate", "median"},
+      {"discarded_runs",
+       "warmup plus the first measured run (Phase 4 showed 10 s is not steady state)"},
       {"recall", "tie-aware, thresholded on the k-th true distance (DECISIONS.md D17)"},
       {"comparison_rule", "match on recall, never on ef"},
       {"build_time_runs", 1}};
@@ -519,6 +544,156 @@ int main(int argc, char** argv) {
   (void)skip_hnswlib;
   std::printf("\nhnswlib not available in this build — comparison skipped\n");
 #endif
+
+  // ---- product quantization ----------------------------------------------
+  //
+  // Two measurements per m, because they answer different questions.
+  //
+  // Brute-force ADC scans every code, so it isolates *quantization* loss with
+  // no graph in the way — the accuracy/memory frontier this phase exists to
+  // draw. HNSW+PQ is the practical configuration and compounds two
+  // approximations, so its recall is lower and the difference between the two
+  // says which approximation cost what.
+  //
+  // Both are graded against the same exact ground truth, never against each
+  // other.
+  if (with_pq) {
+    const auto learn_path = root / (prefix + "_learn.fvecs");
+    VectorStore learn;
+    if (!std::filesystem::exists(learn_path) || load_fvecs(learn_path, learn) != Status::ok) {
+      std::fprintf(stderr, "\nskip: %s not found — PQ needs the learn split\n",
+                   learn_path.string().c_str());
+    } else {
+      std::printf("\nproduct quantization, trained on %zu held-out vectors\n", learn.size());
+
+      for (const std::size_t m : pq_subspaces) {
+        if (base.dim() % m != 0) {
+          std::printf("  m=%zu skipped: does not divide dim %zu\n", m, base.dim());
+          continue;
+        }
+        PqConfig pq_config;
+        pq_config.subspaces = m;
+
+        const auto train_start = clock_type::now();
+        auto pq = train_product_quantizer(learn, pq_config);
+        if (pq == nullptr) {
+          std::printf("  m=%zu rejected by the trainer\n", m);
+          continue;
+        }
+        const double train_seconds = seconds_since(train_start);
+
+        const auto encode_start = clock_type::now();
+        if (pq->encode(base) != Status::ok) {
+          std::fprintf(stderr, "error: PQ encode failed at m=%zu\n", m);
+          return 1;
+        }
+        const double encode_seconds = seconds_since(encode_start);
+        const double error = pq->reconstruction_error(base);
+
+        const double ratio = static_cast<double>(base.dim() * sizeof(float)) /
+                             static_cast<double>(pq->code_bytes_per_vector());
+        std::printf("  m=%-3zu %zu B/vector (%.0fx smaller), codes %.1f MiB, codebook %.0f KiB,"
+                    " train %.0f s, encode %.0f s, recon err %.0f\n",
+                    m, pq->code_bytes_per_vector(), ratio,
+                    static_cast<double>(pq->code_bytes()) / (1024.0 * 1024.0),
+                    static_cast<double>(pq->codebook_bytes()) / 1024.0, train_seconds,
+                    encode_seconds, error);
+
+        json entry;
+        entry["name"] = "lodestone-pq-bruteforce";
+        entry["pq"] = {{"subspaces", m},
+                       {"centroids", pq_centroids},
+                       {"bytes_per_vector", pq->code_bytes_per_vector()},
+                       {"compression_ratio", ratio},
+                       {"code_bytes", pq->code_bytes()},
+                       {"codebook_bytes", pq->codebook_bytes()},
+                       {"train_seconds", train_seconds},
+                       {"encode_seconds", encode_seconds},
+                       {"reconstruction_error", error},
+                       {"trained_on", "held-out learn split"},
+                       {"distance", "asymmetric (ADC), query not quantized"},
+                       {"reranking", "none — it would recover recall and hide the loss"}};
+
+        // Brute force over the codes: quantization loss alone.
+        {
+          auto adc = make_pq_distance_computer(*pq);
+          if (adc == nullptr) {
+            std::fprintf(stderr, "error: no ADC computer at m=%zu\n", m);
+            return 1;
+          }
+          json sweep = json::array();
+          for (const std::size_t k : k_values) {
+            const SearchFn fn = [&](const float* q, std::size_t kk, std::vector<Neighbor>& o) {
+              o.resize(kk);
+              (void)brute_force_knn(*adc, q, base.size(), o);
+            };
+            const auto mm =
+                measure(fn, queries, truth, *exact, k, 0, runs, warmup_seconds, nullptr);
+            std::printf("    brute ADC  k=%-4zu recall %.4f  %9.1f QPS  p50 %8.1f us\n", k,
+                        mm.recall_tied, median(mm.qps_runs), mm.p50_us);
+            sweep.push_back(to_json(mm));
+          }
+          entry["sweep"] = sweep;
+          indexes.push_back(entry);
+        }
+
+        // HNSW over the codes: both approximations together.
+        //
+        // Off by default, and for a measured reason. The neighbour selection
+        // heuristic calls prepare_query() once per candidate. That costs 28 ns
+        // for the exact kernel — it is a memcpy — and 10 microseconds for PQ,
+        // which rebuilds the whole m x 256 table. 373x to 670x, measured.
+        // Construction is therefore hours at 1M where the exact build is six
+        // minutes.
+        //
+        // The fix is not in this file: PQ belongs at *search* time over a graph
+        // built with exact distances. DECISIONS.md D36.
+        if (pq_graph) {
+          auto index = make_hnsw_index_with(
+              base, [&] { return make_pq_distance_computer(*pq); }, config);
+          if (index == nullptr) {
+            std::fprintf(stderr, "error: PQ-backed index rejected at m=%zu\n", m);
+            return 1;
+          }
+          const auto build_start = clock_type::now();
+          for (std::size_t i = 0; i < base.size(); ++i) {
+            if (index->add(static_cast<VectorId>(i)) != Status::ok) {
+              std::fprintf(stderr, "error: PQ index insert failed at %zu\n", i);
+              return 1;
+            }
+          }
+          const double build_seconds = seconds_since(build_start);
+
+          json graph_entry;
+          graph_entry["name"] = "lodestone-pq-hnsw";
+          graph_entry["pq"] = entry["pq"];
+          graph_entry["build_seconds"] = build_seconds;
+          graph_entry["index_bytes"] = index->graph_bytes();
+          json sweep = json::array();
+          for (const std::size_t k : k_values) {
+            for (const std::size_t ef : ef_values) {
+              if (ef < k) {
+                continue;
+              }
+              SearchParams params;
+              params.ef = ef;
+              const SearchFn fn = [&](const float* q, std::size_t kk, std::vector<Neighbor>& o) {
+                o.resize(kk);
+                (void)index->search(q, params, o);
+              };
+              const auto mm =
+                  measure(fn, queries, truth, *exact, k, ef, runs, warmup_seconds, nullptr);
+              std::printf("    hnsw+PQ    k=%-4zu ef=%-4zu recall %.4f  %9.1f QPS\n", k, ef,
+                          mm.recall_tied, median(mm.qps_runs));
+              sweep.push_back(to_json(mm));
+            }
+          }
+          graph_entry["sweep"] = sweep;
+          indexes.push_back(graph_entry);
+        }
+      }
+    }
+  }
 
   out["indexes"] = indexes;
 

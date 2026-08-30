@@ -168,9 +168,25 @@ double recall_at_k_tied(const DistanceComputer& computer, std::span<const Neighb
 
   // A neighbour at most as far as the k-th true neighbour is a correct answer,
   // whether or not it is the particular id the reference generator chose.
+  //
+  // The distance is **recomputed** from `computer` rather than read out of
+  // `got[i].distance`. Both sides of the comparison must come from the same
+  // computer, and the carried distance need not: an approximate computer — PQ's
+  // asymmetric lookup, Phase 5 — fills that field with a *quantized* estimate,
+  // while the threshold above is exact. Comparing the two silently measures
+  // nothing.
+  //
+  // This mattered: measured on SIFT10K at m=8, trusting the carried distance
+  // reported 0.9690 where the truth was 0.5600, and it made recall appear to
+  // get *worse* as the codebook got finer. For an exact computer the recomputed
+  // value is identical to the carried one, so no earlier result moves.
   std::size_t hits = 0;
   for (const auto& n : got) {
-    if (n.distance <= threshold || within_tolerance(n.distance, threshold)) {
+    if (n.id == invalid_id) {
+      continue;
+    }
+    const float distance = computer.distance_to(n.id);
+    if (distance <= threshold || within_tolerance(distance, threshold)) {
       ++hits;
     }
   }

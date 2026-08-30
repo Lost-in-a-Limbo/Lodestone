@@ -14,7 +14,7 @@ include(Catch)
 # against it; catch_discover_tests() still registers every TEST_CASE as its own
 # ctest entry, so nothing is lost in granularity.
 add_executable(lodestone_tests test_types.cpp test_brute_force.cpp test_distance.cpp
-                               test_hnsw.cpp test_io.cpp
+                               test_hnsw.cpp test_io.cpp test_quantizer.cpp
                                test_vector_store.cpp)
 
 target_link_libraries(lodestone_tests PRIVATE lodestone_core lodestone_options

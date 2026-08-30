@@ -114,6 +114,43 @@ second HNSW implementation is small.
 Worth doing if the project ever needs an IVF or PQ baseline, which is Phase 5's
 territory rather than Phase 4's.
 
+### Let `HnswIndex` take separate build and search computers
+**Raised:** Phase 5, and it is the natural fix for D36.
+
+`make_hnsw_index_with` takes one factory and uses it for both the construction
+computer and the query computer. PQ needs those to differ: build the graph with
+exact distances, then search it with the quantized ones. That is what FAISS
+does, and it is the configuration that makes HNSW+PQ practical — construction is
+a one-time cost that can afford full precision, while the memory saving is a
+property of the stored corpus at query time.
+
+The change is small: a second factory parameter, defaulted to the first. Not
+made in Phase 5 because the phase's deliverable is the recall/memory curve, and
+brute-force ADC measures that without a graph in the way.
+
+### Re-rank PQ candidates with exact distances
+**Raised:** Phase 5. **Needed by:** anyone who wants the index to be *good*.
+
+Production PQ systems fetch the top ~10k candidates by ADC and re-score them
+with exact float distances. That recovers most of the recall PQ loses, for a
+cost that is a rounding error next to the scan — and it needs the full vectors
+kept around, so it trades back some of the memory saving.
+
+Deliberately not implemented, because Phase 5's deliverable is *the recall
+loss*, and re-ranking recovers exactly the thing being measured. A re-ranked
+number answers "how good can a PQ system be", not "what does this compression
+cost" (D35).
+
+### SIMD the PQ table build and the code scan
+**Raised:** Phase 5.
+
+`prepare_query()` computes m × 256 squared distances scalar; the scan is m
+dependent loads and adds per vector. Both are obvious AVX2 targets — the table
+build is the same shape as the exact kernel, and the scan can gather four
+codes at a time. Not done because the phase's exit criteria are about accuracy
+and memory, and an unmeasured optimisation would just be noise in the recall
+table.
+
 ### DONE — 64-byte-align the prepared query buffer
 **Raised:** Phase 1 task 3. **Answered:** Phase 2 task 4.
 

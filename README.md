@@ -56,8 +56,8 @@ Everything is written from scratch. `hnswlib` and `faiss` appear only in `bench/
 | 2 | SIMD distance kernels (SSE / AVX2) with runtime dispatch | ✅ done |
 | 3 | HNSW construction and search | ✅ done |
 | 4 | Benchmark harness, comparison against `hnswlib` | ✅ done |
-| 5 | Product quantization | 🔨 in progress |
-| 6 | **Filtered search — reproducing the collapse** | — |
+| 5 | Product quantization | ✅ done |
+| 6 | **Filtered search — reproducing the collapse** | 🔨 in progress |
 | 7 | An attempt at a fix | — |
 | 8 | Interactive results showcase | — |
 
@@ -80,7 +80,16 @@ Against **hnswlib 0.8.0** on SIFT1M — identical corpus, queries, ground truth,
 
 Against exact brute force on the same machine — 32.3 QPS at recall 1.000000 — HNSW at ef=64 is **187× the throughput at 96.4% recall**, by examining 1,230 of a million vectors. Build 360 s single-threaded, graph 135.9 MiB.
 
-The exact baseline underneath it:
+**Product quantization** trades recall for memory, measured without re-ranking so the loss is visible rather than recovered:
+
+| | bytes/vector | corpus | recall@10 |
+|---|---|---|---|
+| exact float32 | 512 | 488.3 MiB | 1.000000 |
+| PQ m = 32 | 32 | 30.5 MiB | 0.7234 |
+| **PQ m = 16** | **16** | **15.3 MiB** | **0.5449** |
+| PQ m = 8 | 8 | 7.6 MiB | 0.3135 |
+
+The exact baseline underneath all of it:
 
 | Metric | Value |
 |---|---|
